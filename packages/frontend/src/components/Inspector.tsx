@@ -11,6 +11,11 @@ import {
 } from 'solid-js';
 import { useInspectorSurface } from '../a11y';
 import {
+  ASKED,
+  DEFERRED,
+  ENDED_AT,
+  OUTPUT_CAP,
+  OUTPUT_CAPPED_AT,
   QUALITY_GATE_PASSED,
   SUPERSEDED_LABEL,
   toInspectorView,
@@ -64,14 +69,18 @@ function joined(parts: readonly (JSX.Element | null)[]): JSX.Element[] {
 }
 
 /** A node branches off the spine (an attempt, the superseded call, the outcome); the source,
- * the decision and the cascade leg rows sit on it (DESIGN.md Route Trace › Anatomy;
- * add-route-trace-cascade-legs design D1: the spine is the router, a branch is a provider
- * call). */
+ * the decision, the cascade leg rows and the deferral rows sit on it (DESIGN.md Route Trace ›
+ * Anatomy; add-route-trace-cascade-legs design D1: the spine is the router, a branch is a
+ * provider call; record-route-legs design D7: a deferral is a router decision). */
 const BRANCHES: ReadonlySet<RouteTraceNode['kind']> = new Set(['attempt', 'superseded', 'outcome']);
+
+/** A figure inside a node's words (an output cap, an ask, a recorded time): tabular Geist. */
+const fig = (text: string): JSX.Element => <span class="figure">{text}</span>;
 
 /** One node's text block (design D6, the Text column): it states the node's outcome in words,
  * so the decoration beside it only repeats them. Identifiers (model ids, the failure label,
- * markers) are Mono; figures (the latency, `q=`, the attempt cost) are tabular Geist. */
+ * markers) are Mono; figures (the latency, `q=`, the attempt cost, an output cap, an ask, the
+ * cheap leg's recorded end time) are tabular Geist. */
 function TraceNodeText(props: { node: RouteTraceNode }): JSX.Element {
   const n = props.node;
   switch (n.kind) {
@@ -88,23 +97,69 @@ function TraceNodeText(props: { node: RouteTraceNode }): JSX.Element {
     case 'leg':
       // A cascade leg row (add-route-trace-cascade-legs design D1): the leg word at the Label
       // weight in Ink, so the legs can be found among the same-shaped spine rings, then its one
-      // detail in the row's Ink 2. Neutral: never the accent, never the failure red.
-      return <>{joined([<span class="rt-leg">{n.leg}</span>, n.detail])}</>;
+      // detail in the row's Ink 2. Neutral: never the accent, never the failure red. An escalation
+      // row whose cause the route record states adds the cheap leg's end time (record-route-legs
+      // design D7), `at <time>` kept on one line.
+      return (
+        <>
+          {joined([
+            <span class="rt-leg">{n.leg}</span>,
+            n.detail,
+            n.at === null ? null : (
+              <span class="rt-nowrap">
+                {ENDED_AT} {fig(n.at)}
+              </span>
+            ),
+          ])}
+        </>
+      );
+    case 'deferral':
+      // A recorded deferral (record-route-legs design D7): a router decision on the spine, so it
+      // reads like a leg row, the word `deferred` at the Label weight in Ink, then the member's
+      // model id in Mono and the reason in the row's Ink 2, its figures tabular. Neutral: never
+      // the accent, never the failure red, never dashed.
+      return (
+        <>
+          {joined([
+            <span class="rt-leg">{DEFERRED}</span>,
+            <span class="mono rt-model">{n.model}</span>,
+            n.lacks,
+            n.outputCap === null ? null : (
+              <>
+                {OUTPUT_CAP} {fig(n.outputCap.cap)}
+                {n.outputCap.ask === null ? null : (
+                  <>
+                    {' < '}
+                    {fig(n.outputCap.ask)} {ASKED}
+                  </>
+                )}
+              </>
+            ),
+          ])}
+        </>
+      );
     case 'attempt':
       return (
         <>
           {joined([
             <span class="mono rt-model">{n.model}</span>,
             // A dispatched failure's label is the one red text in the trace (design D6,
-            // Failure text); the skip label is not a failure and keeps the row's Ink 3. A
-            // kind is a machine token, so it is Mono; a deadline cut states its cause in
-            // words, so it is prose (keep-cheap-leg-attempt-trail design D5).
+            // Failure text); the skip label is not a failure and keeps the row's Ink 3, nor is
+            // an in-flight member's (record-route-legs design D7). A kind is a machine token,
+            // so it is Mono; a deadline cut states its cause in words, so it is prose
+            // (keep-cheap-leg-attempt-trail design D5).
             n.emphasis === 'failed' ? (
               <span class={n.stop === null ? 'mono rt-failure' : 'rt-failure'}>{n.label}</span>
             ) : (
               n.label
             ),
             ...(n.markers ?? []).map((m) => <span class="mono rt-meta">{m}</span>),
+            // A recorded clamp, after the markers, in the same Caption-size Ink 3: never red.
+            n.clamp === null ? null : (
+              <span class="rt-meta">
+                {OUTPUT_CAPPED_AT} {fig(n.clamp)}
+              </span>
+            ),
           ])}
         </>
       );
@@ -133,6 +188,24 @@ function TraceNodeText(props: { node: RouteTraceNode }): JSX.Element {
               {n.latency}
             </span>,
           ])}
+          {/* The served member's recorded clamp (record-route-legs design D7): its own line in
+              the Caption-size Ink 3 meta treatment, never the accent, above any kept verdict. */}
+          <Show when={n.clamp} keyed>
+            {(c) => (
+              <>
+                <span class="sr-only">{SEP}</span>
+                <span class="rt-meta rt-sub" data-testid="rt-clamp">
+                  {OUTPUT_CAPPED_AT} {fig(c.to)}
+                  {c.ask === null ? null : (
+                    <>
+                      {' of '}
+                      {fig(c.ask)} {ASKED}
+                    </>
+                  )}
+                </span>
+              </>
+            )}
+          </Show>
           {/* A kept cheap answer's passing verdict (add-route-trace-cascade-legs design D7): a
               second line in the Caption-size Ink 3 meta treatment, never the accent. */}
           <Show when={n.keptQuality} keyed>

@@ -1,3 +1,4 @@
+import type { RouteLeg } from '@polyrouter/shared';
 import { userPrincipal } from '@polyrouter/shared/server';
 import type { LogWriter, RequestLogDraft } from './log-writer';
 import { ProxyMetrics } from '../observability/proxy-metrics';
@@ -135,7 +136,9 @@ describe('RequestRecorder', () => {
 
   // classify-plan-quota-errors task 6.4: a plan-cooldown skip's reason rides the same trail
   // gate as every other entry, and a plan kind's own message persists verbatim.
-  it('keeps skipReason on fallback and error rows and discards it on success and cancelled', () => {
+  // record-route-legs design D6 reversed RT-2's cancelled-null rule: a cancelled row keeps
+  // the skip its walk recorded before the client left, like every other trail entry.
+  it('keeps skipReason on fallback, error and cancelled rows and discards it on a non-escalated success', () => {
     const { recorder, enqueue } = makeRecorder();
     const attemptFailures = [
       {
@@ -148,14 +151,10 @@ describe('RequestRecorder', () => {
         terminal: true,
       },
     ];
-    for (const status of ['success', 'cancelled'] as const) {
-      recorder.record(ctx({ attemptFailures }), { status, outputChars: 0 });
-    }
-    for (const call of enqueue.mock.calls) {
-      expect((call[0] as RequestLogDraft).attemptFailures).toBeUndefined();
-    }
+    recorder.record(ctx({ attemptFailures }), { status: 'success', outputChars: 0 });
+    expect((enqueue.mock.calls[0]![0] as RequestLogDraft).attemptFailures).toBeUndefined();
     enqueue.mockClear();
-    for (const status of ['fallback', 'error'] as const) {
+    for (const status of ['fallback', 'error', 'cancelled'] as const) {
       recorder.record(ctx({ attemptFailures }), {
         status,
         outputChars: 0,
@@ -186,21 +185,24 @@ describe('RequestRecorder', () => {
   // columns follow the TERMINAL status. Two rules, not one — a request the chain
   // RECOVERED has no terminal error but very much has a trail, and it is the only
   // record of why the chain moved.
-  it('discards the per-attempt trail on success and cancelled — but KEEPS it on fallback', () => {
+  // record-route-legs design D6: a cancelled row keeps the trail its walk recorded
+  // before the client left (RT-2 discarded it because the member in flight was missing;
+  // that member did not fail, so it is the route record's `stopped`, never an entry).
+  it('discards the per-attempt trail on a non-escalated success — but KEEPS it on fallback and cancelled', () => {
     const { recorder, enqueue } = makeRecorder();
     const attemptFailures = [
       { index: 0, providerId: 'p1', model: 'a', kind: 'bad_request', dispatched: true },
     ];
-    for (const status of ['success', 'cancelled'] as const) {
+    recorder.record(ctx({ attemptFailures }), { status: 'success', outputChars: 0 });
+    expect((enqueue.mock.calls[0]![0] as RequestLogDraft).attemptFailures).toBeUndefined();
+    enqueue.mockClear();
+    for (const status of ['fallback', 'cancelled'] as const) {
       recorder.record(ctx({ attemptFailures }), { status, outputChars: 0 });
     }
+    expect(enqueue.mock.calls).toHaveLength(2);
     for (const call of enqueue.mock.calls) {
-      expect((call[0] as RequestLogDraft).attemptFailures).toBeUndefined();
+      expect((call[0] as RequestLogDraft).attemptFailures).toEqual(attemptFailures);
     }
-    enqueue.mockClear();
-    recorder.record(ctx({ attemptFailures }), { status: 'fallback', outputChars: 0 });
-    const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
-    expect(d.attemptFailures).toEqual(attemptFailures);
   });
 
   // keep-cheap-leg-attempt-trail (design D1): an escalated row's status reads the
@@ -245,7 +247,9 @@ describe('RequestRecorder', () => {
       expect((enqueue.mock.calls[0]![0] as RequestLogDraft).attemptFailures).toBeUndefined();
     });
 
-    it('discards it on an escalated cancel and on a success that did not escalate', () => {
+    // record-route-legs design D6 (reverses RT-2's D2): a cancelled escalation keeps its
+    // cheap leg's trail, exactly as the escalated success above does.
+    it('keeps it on an escalated cancel and discards it on a success that did not escalate', () => {
       const { recorder, enqueue } = makeRecorder();
       recorder.record(ctx({ attemptFailures: cheapTrail }), {
         status: 'cancelled',
@@ -259,9 +263,8 @@ describe('RequestRecorder', () => {
         escalated: false,
       });
       expect(enqueue.mock.calls).toHaveLength(2);
-      for (const call of enqueue.mock.calls) {
-        expect((call[0] as RequestLogDraft).attemptFailures).toBeUndefined();
-      }
+      expect((enqueue.mock.calls[0]![0] as RequestLogDraft).attemptFailures).toEqual(cheapTrail);
+      expect((enqueue.mock.calls[1]![0] as RequestLogDraft).attemptFailures).toBeUndefined();
     });
   });
 
@@ -425,6 +428,99 @@ describe('RequestRecorder', () => {
       );
       const a = enqueueAttempt.mock.calls[0]![0] as Record<string, unknown>;
       expect('billed' in a).toBe(false);
+    });
+  });
+
+  // record-route-legs design D6: the route record follows the WALK on every status, and
+  // a cancelled row keeps the trail walked before the client left.
+  describe('the route record (record-route-legs)', () => {
+    const cheapTrail = [
+      {
+        index: 0,
+        providerId: 'p1',
+        model: 'cheap-a',
+        kind: 'bad_request',
+        status: 400,
+        dispatched: true,
+        leg: 'cheap' as const,
+      },
+    ];
+    const legs: RouteLeg[] = [
+      { leg: 'cheap', end: 'exhausted', endedMs: 3 },
+      {
+        leg: 'escalation',
+        end: 'cancelled',
+        endedMs: 5,
+        stopped: { index: 0, model: 'strong-a', sent: true },
+      },
+    ];
+
+    it('a cancelled row keeps its trail and its record', () => {
+      const { recorder, enqueue } = makeRecorder();
+      recorder.record(ctx({ attemptFailures: cheapTrail, routeLegs: legs }), {
+        status: 'cancelled',
+        outputChars: 0,
+        escalated: true,
+        escalationSource: 'cheap_error',
+        error: { kind: 'unavailable' },
+      });
+      const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+      expect(d.attemptFailures).toEqual(cheapTrail);
+      expect(d.routeLegs).toEqual(legs);
+      expect(d.error).toBeUndefined(); // the terminal-error gate is unchanged
+    });
+
+    it('a non-escalated success discards the trail but keeps the record', () => {
+      const { recorder, enqueue } = makeRecorder();
+      const served: RouteLeg[] = [{ leg: 'primary', end: 'served', endedMs: 4, servedIndex: 1 }];
+      recorder.record(ctx({ attemptFailures: cheapTrail, routeLegs: served }), {
+        status: 'success',
+        outputChars: 0,
+      });
+      const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+      expect(d.attemptFailures).toBeUndefined();
+      expect(d.routeLegs).toEqual(served);
+    });
+
+    it.each(['success', 'fallback', 'error', 'cancelled'] as const)(
+      'persists the record on a %s row',
+      (status) => {
+        const { recorder, enqueue } = makeRecorder();
+        recorder.record(ctx({ routeLegs: legs }), { status, outputChars: 0 });
+        expect((enqueue.mock.calls[0]![0] as RequestLogDraft).routeLegs).toEqual(legs);
+      },
+    );
+
+    it('a context without a record (batch-style) or with an empty one records none', () => {
+      const { recorder, enqueue } = makeRecorder();
+      recorder.record(ctx(), { status: 'success', outputChars: 0 });
+      recorder.record(ctx({ routeLegs: [] }), { status: 'error', outputChars: 0 });
+      for (const call of enqueue.mock.calls) {
+        const d = call[0] as RequestLogDraft;
+        expect(d.routeLegs).toBeUndefined();
+        expect('routeLegs' in d).toBe(false);
+      }
+    });
+
+    it('clamps an endedMs past the row’s duration_ms (a backward clock step) to it', () => {
+      const { recorder, enqueue } = makeRecorder();
+      // startedAt 20ms ago; a leg stamped 60_000ms after the start can only come from a
+      // clock that stepped backwards between the leg's read and the row's.
+      recorder.record(
+        ctx({
+          routeLegs: [
+            { leg: 'cheap', end: 'gate_failed', endedMs: 0, servedIndex: 0 },
+            { leg: 'escalation', end: 'served', endedMs: 60_000, servedIndex: 0 },
+          ],
+        }),
+        { status: 'success', outputChars: 0, escalated: true },
+      );
+      const d = enqueue.mock.calls[0]![0] as RequestLogDraft;
+      const [cheap, escalation] = d.routeLegs!;
+      expect(cheap!.endedMs).toBe(0); // within the duration: untouched
+      expect(escalation!.endedMs).toBe(d.durationMs);
+      expect(escalation!.endedMs).toBeLessThan(60_000);
+      expect(escalation).toMatchObject({ leg: 'escalation', end: 'served', servedIndex: 0 });
     });
   });
 

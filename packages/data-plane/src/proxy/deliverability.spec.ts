@@ -61,6 +61,33 @@ describe('planDeliverability — the four groups', () => {
     expect(order(plan)).toEqual(['a', 'c', 'b', 'd']);
   });
 
+  // record-route-legs (design D5): a deferral names the member's EFFECTIVE position, the
+  // index space of its clamp and its trail entry — never its configured position, and
+  // the lists themselves stay in configured order (the reason strings are unchanged).
+  it('gives every deferral the member’s EFFECTIVE index, in configured order', () => {
+    const plan = planDeliverability(
+      [
+        m('both', 4_096, ['vision']), // group 4 -> effective 3
+        m('short', 200_000, ['vision']), // group 3 -> effective 2
+        m('clamped', 4_096), // group 2 -> effective 1
+        m('fine', 200_000), // group 1 -> effective 0
+      ],
+      100_000,
+    );
+    expect(order(plan)).toEqual(['fine', 'clamped', 'short', 'both']);
+    expect(plan.deferred).toEqual([
+      { index: 3, label: 'both', cap: 4_096 },
+      { index: 1, label: 'clamped', cap: 4_096 },
+    ]);
+    expect(plan.capabilityDeferred).toEqual([
+      { index: 3, label: 'both', capabilities: ['vision'] },
+      { index: 2, label: 'short', capabilities: ['vision'] },
+    ]);
+    for (const d of [...plan.deferred, ...plan.capabilityDeferred]) {
+      expect(plan.members[d.index]!.label).toBe(d.label);
+    }
+  });
+
   it('prefers a member that can answer BRIEFLY over one that cannot answer', () => {
     // The whole reason capability outranks capacity: A truncates honestly through
     // the protocol's `length` stop reason; B rejects the request outright.
@@ -84,7 +111,9 @@ describe('planDeliverability — unknown never defers', () => {
       undefined,
     );
     expect(order(plan)).toEqual(['silent', 'affirms', 'denies']);
-    expect(plan.capabilityDeferred).toEqual([{ label: 'denies', capabilities: ['vision'] }]);
+    expect(plan.capabilityDeferred).toEqual([
+      { index: 2, label: 'denies', capabilities: ['vision'] },
+    ]);
   });
 });
 
@@ -106,8 +135,8 @@ describe('planDeliverability — no member is discarded', () => {
       undefined,
     );
     expect(plan.capabilityDeferred).toEqual([
-      { label: 'p', capabilities: ['vision', 'tools'] },
-      { label: 'r', capabilities: ['tools'] },
+      { index: 1, label: 'p', capabilities: ['vision', 'tools'] },
+      { index: 2, label: 'r', capabilities: ['tools'] },
     ]);
   });
 });

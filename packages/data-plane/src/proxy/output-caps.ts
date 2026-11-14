@@ -44,11 +44,19 @@ export interface CapPlan<T> {
   readonly members: readonly CapPlannedMember<T>[];
   /** Members deferred for CAPACITY behind at least one member that was not (an
    * all-insufficient chain deferred nothing behind anything; only the clamps
-   * record). */
-  readonly deferred: readonly { readonly label: string; readonly cap: number }[];
+   * record), in CONFIGURED order. `index` is the member's position in the
+   * EFFECTIVE walk order (`members`) — the index space the failure trail uses
+   * (record-route-legs design D5). */
+  readonly deferred: readonly {
+    readonly index: number;
+    readonly label: string;
+    readonly cap: number;
+  }[];
   /** Members deferred for CAPABILITY, on the same "behind something" rule
-   * (honest-model-capabilities). */
+   * (honest-model-capabilities), in configured order, with the same effective
+   * `index`. */
   readonly capabilityDeferred: readonly {
+    readonly index: number;
     readonly label: string;
     readonly capabilities: readonly string[];
   }[];
@@ -124,6 +132,10 @@ export function planDeliverability<T>(
   const group = (r: (typeof rows)[number]): number =>
     (r.capabilityShort ? 2 : 0) + (r.capShort ? 1 : 0);
   const ordered = [...rows].sort((a, b) => group(a) - group(b) || a.index - b.index);
+  // Each configured member's EFFECTIVE position (record-route-legs design D5), so a
+  // deferral names the member in the same index space as its clamp and its trail entry.
+  const effective = new Map<number, number>(ordered.map((r, position) => [r.index, position]));
+  const at = (r: (typeof rows)[number]): number => effective.get(r.index)!;
 
   return {
     planned: true,
@@ -136,12 +148,12 @@ export function planDeliverability<T>(
     // A deferral is only reported when the member was deferred BEHIND something:
     // an all-short chain deferred nothing relative to anything.
     deferred: rows.some((r) => !r.capShort)
-      ? rows.filter((r) => r.capShort).map((r) => ({ label: r.label, cap: r.cap! }))
+      ? rows.filter((r) => r.capShort).map((r) => ({ index: at(r), label: r.label, cap: r.cap! }))
       : [],
     capabilityDeferred: rows.some((r) => !r.capabilityShort)
       ? rows
           .filter((r) => r.capabilityShort)
-          .map((r) => ({ label: r.label, capabilities: r.missing }))
+          .map((r) => ({ index: at(r), label: r.label, capabilities: r.missing }))
       : [],
   };
 }

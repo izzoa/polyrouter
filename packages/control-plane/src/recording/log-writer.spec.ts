@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { Logger } from '@nestjs/common';
+import { ROUTE_LEG_LIST_MAX, type RouteLeg } from '@polyrouter/shared';
 import type { PersistencePort, PriceSnapshot, Principal } from '@polyrouter/shared/server';
 import { userPrincipal } from '@polyrouter/shared/server';
 import { computeCost } from '@polyrouter/data-plane';
@@ -6,6 +8,7 @@ import { ProxyMetrics } from '../observability/proxy-metrics';
 import type { PricingService } from '../pricing/pricing.service';
 import {
   LogWriter,
+  routeLegsColumn,
   type LogWriterConfig,
   type RequestAttemptDraft,
   type RequestLogDraft,
@@ -610,5 +613,354 @@ describe('LogWriter not-billed rows (zero-cost-unbilled-errors)', () => {
     ];
     expect('billed' in attemptRows[0]!).toBe(false);
     expect(attemptRows[0]!.cost).toBeGreaterThan(0); // the cheap call keeps its real cost
+  });
+});
+
+// record-route-legs design D6: `route_legs` has no CHECK, so the writer is its gate. It
+// rebuilds the record from the allowlist, drops a leg that breaks a rule, nulls a
+// sequence a walk cannot produce, and never fails (or logs) an insert.
+describe('routeLegsColumn — the writer rebuilds the route record', () => {
+  const cheapLeg = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    leg: 'cheap',
+    end: 'exhausted',
+    endedMs: 30,
+    ...over,
+  });
+  const primary = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    leg: 'primary',
+    end: 'served',
+    endedMs: 12,
+    servedIndex: 0,
+    ...over,
+  });
+  /** One leg through the sanitizer: the kept leg, or null when it was dropped. */
+  const one = (leg: Record<string, unknown>): unknown => {
+    const out = routeLegsColumn([leg]);
+    return out === null ? null : out[0];
+  };
+  const FULL: RouteLeg[] = [
+    {
+      leg: 'cheap',
+      end: 'stopped',
+      endedMs: 40,
+      stopped: { index: 1, model: 'cheap-b', sent: true, kind: 'unavailable', status: 503 },
+      ask: 100_000,
+      deferred: [
+        { index: 1, model: 'cheap-b', reason: 'capability', capabilities: ['tools', 'vision'] },
+        { index: 1, model: 'cheap-b', reason: 'output_cap', cap: 16_384 },
+      ],
+      clamps: [{ index: 1, model: 'cheap-b', to: 16_384 }],
+    },
+    { leg: 'escalation', end: 'served', endedMs: 900, servedIndex: 0 },
+  ];
+
+  it('keeps every well-formed field a walk produces, exactly', () => {
+    expect(routeLegsColumn(FULL)).toEqual(FULL);
+    expect(routeLegsColumn([primary()])).toEqual([primary()]);
+    expect(routeLegsColumn([cheapLeg()])).toEqual([cheapLeg()]);
+    for (const end of ['deadline', 'cancelled'] as const) {
+      const leg = cheapLeg({ end, stopped: { index: 0, model: 'm', sent: false } });
+      expect(one(leg)).toEqual(leg);
+      expect(one(cheapLeg({ end }))).toEqual(cheapLeg({ end })); // between members: no stopper
+    }
+    // a stopped end with no upstream status (an unclassified error) is well-formed
+    const noStatus = cheapLeg({
+      end: 'stopped',
+      stopped: { index: 0, model: 'm', sent: true, kind: 'unavailable' },
+    });
+    expect(one(noStatus)).toEqual(noStatus);
+  });
+
+  it('rebuilds from the allowlist: unknown fields never reach the column', () => {
+    const out = routeLegsColumn([
+      {
+        ...FULL[0],
+        message: 'provider said: secret prompt text',
+        stopped: { ...FULL[0]!.stopped, providerId: 'prov-1', message: 'x' },
+        deferred: [{ ...FULL[0]!.deferred![1], label: 'Friendly name' }],
+        clamps: [{ ...FULL[0]!.clamps![0], providerId: 'prov-1' }],
+      },
+      { ...FULL[1], prompt: 'hi there' },
+    ]);
+    expect(out).toEqual([{ ...FULL[0], deferred: [FULL[0]!.deferred![1]] }, FULL[1]]);
+    const text = JSON.stringify(out);
+    for (const leaked of [
+      'message',
+      'secret',
+      'providerId',
+      'prov-1',
+      'label',
+      'Friendly',
+      'prompt',
+    ]) {
+      expect(text).not.toContain(leaked);
+    }
+  });
+
+  it('checks every enum: leg, end, deferral reason, capability, error kind', () => {
+    expect(one(primary({ leg: 'strong' }))).toBeNull();
+    expect(one(primary({ end: 'committed' }))).toBeNull();
+    expect(
+      one(cheapLeg({ deferred: [{ index: 0, model: 'm', reason: 'cost', cap: 1 }] })),
+    ).toBeNull();
+    expect(
+      one(
+        cheapLeg({
+          deferred: [{ index: 0, model: 'm', reason: 'capability', capabilities: ['audio'] }],
+        }),
+      ),
+    ).toBeNull();
+    // an unknown kind drops the leg: the column holds only the provider-error taxonomy
+    expect(
+      one(
+        cheapLeg({ end: 'stopped', stopped: { index: 0, model: 'm', sent: true, kind: 'teapot' } }),
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['servedIndex -1', primary({ servedIndex: -1 })],
+    ['servedIndex 1.5', primary({ servedIndex: 1.5 })],
+    ['servedIndex "0"', primary({ servedIndex: '0' })],
+    ['endedMs -1', primary({ endedMs: -1 })],
+    ['endedMs 2.5', primary({ endedMs: 2.5 })],
+    ['endedMs NaN', primary({ endedMs: Number.NaN })],
+    ['endedMs Infinity', primary({ endedMs: Infinity })],
+    ['endedMs missing', primary({ endedMs: undefined })],
+    ['ask -5', primary({ ask: -5, clamps: [{ index: 0, model: 'm', to: 4 }] })],
+    ['ask 0.5', primary({ ask: 0.5, clamps: [{ index: 0, model: 'm', to: 4 }] })],
+    ['clamp to -1', primary({ clamps: [{ index: 0, model: 'm', to: -1 }] })],
+    ['clamp index 0.5', primary({ clamps: [{ index: 0.5, model: 'm', to: 4 }] })],
+    [
+      'deferral cap 1.5',
+      primary({ deferred: [{ index: 1, model: 'm', reason: 'output_cap', cap: 1.5 }] }),
+    ],
+    [
+      'deferral index -2',
+      primary({ deferred: [{ index: -2, model: 'm', reason: 'output_cap', cap: 8 }] }),
+    ],
+    [
+      'stopper index -1',
+      cheapLeg({ end: 'cancelled', stopped: { index: -1, model: 'm', sent: true } }),
+    ],
+  ])('drops a leg whose %s is not a non-negative integer', (_name, leg) => {
+    expect(routeLegsColumn([leg])).toBeNull();
+  });
+
+  it('bounds every model id: 1–256 characters, no control character, well-formed', () => {
+    const at = (model: unknown) =>
+      one(cheapLeg({ end: 'cancelled', stopped: { index: 0, model, sent: true } }));
+    expect(at('m'.repeat(256))).not.toBeNull();
+    expect(at('m'.repeat(257))).toBeNull();
+    expect(at('')).toBeNull();
+    expect(at('gpt-4o\u0000')).toBeNull(); // jsonb cannot store \u0000
+    expect(at('gpt\n4o')).toBeNull();
+    expect(at('gpt\u007f4o')).toBeNull();
+    expect(at('gpt\ud8004o')).toBeNull(); // a lone surrogate jsonb would reject
+    expect(at('model-😀')).not.toBeNull(); // a well-formed pair is a character
+    expect(at(42)).toBeNull();
+    // the same bound on a deferral's and a clamp's model
+    expect(
+      one(
+        primary({ deferred: [{ index: 1, model: 'x'.repeat(300), reason: 'output_cap', cap: 8 }] }),
+      ),
+    ).toBeNull();
+    expect(one(primary({ clamps: [{ index: 0, model: 'a\u0001', to: 8 }] }))).toBeNull();
+  });
+
+  it('checks the stopper: sent a boolean, status an integer 100–599', () => {
+    const stop = (s: Record<string, unknown>) =>
+      one(
+        cheapLeg({ end: 'stopped', stopped: { index: 0, model: 'm', kind: 'policy_block', ...s } }),
+      );
+    expect(stop({ sent: true, status: 451 })).not.toBeNull();
+    expect(stop({ sent: true, status: 100 })).not.toBeNull();
+    expect(stop({ sent: true, status: 599 })).not.toBeNull();
+    expect(stop({ sent: 'true', status: 451 })).toBeNull();
+    expect(stop({ status: 451 })).toBeNull(); // sent missing
+    expect(stop({ sent: true, status: 99 })).toBeNull();
+    expect(stop({ sent: true, status: 600 })).toBeNull();
+    expect(stop({ sent: true, status: 451.5 })).toBeNull();
+    expect(stop({ sent: true, status: '451' })).toBeNull();
+  });
+
+  describe('validates each leg by its end', () => {
+    it.each(['served', 'gate_failed', 'replay_failed'])('servedIndex is required on %s', (end) => {
+      expect(one(cheapLeg({ end, servedIndex: 2 }))).toEqual(cheapLeg({ end, servedIndex: 2 }));
+      expect(one(cheapLeg({ end }))).toBeNull();
+    });
+
+    it.each(['exhausted', 'stopped', 'deadline', 'cancelled'])(
+      'servedIndex is refused on %s',
+      (end) => {
+        const stopped = { index: 0, model: 'm', sent: true, kind: 'policy_block' };
+        expect(
+          one(cheapLeg({ end, servedIndex: 0, ...(end === 'stopped' ? { stopped } : {}) })),
+        ).toBeNull();
+      },
+    );
+
+    it.each(['served', 'gate_failed', 'replay_failed', 'exhausted'])(
+      'stopped is refused on %s',
+      (end) => {
+        const stopped = { index: 0, model: 'm', sent: true };
+        const served = end === 'exhausted' ? {} : { servedIndex: 0 };
+        expect(one(cheapLeg({ end, stopped, ...served }))).toBeNull();
+      },
+    );
+
+    it('a stopped end always carries its stopper with a kind', () => {
+      expect(one(cheapLeg({ end: 'stopped' }))).toBeNull();
+      expect(
+        one(cheapLeg({ end: 'stopped', stopped: { index: 0, model: 'm', sent: true } })),
+      ).toBeNull();
+    });
+
+    it.each(['deadline', 'cancelled'])('kind and status are refused on a %s stopper', (end) => {
+      const base = { index: 0, model: 'm', sent: true };
+      expect(one(cheapLeg({ end, stopped: { ...base, kind: 'unavailable' } }))).toBeNull();
+      expect(one(cheapLeg({ end, stopped: { ...base, status: 503 } }))).toBeNull();
+      expect(one(cheapLeg({ end, stopped: base }))).not.toBeNull();
+    });
+
+    it.each(['gate_failed', 'replay_failed'])('%s is a cheap-leg end only', (end) => {
+      expect(one(primary({ end }))).toBeNull();
+      // The escalation leg is dropped; the cheap leg alone is still a walk's sequence.
+      expect(
+        routeLegsColumn([cheapLeg(), { leg: 'escalation', end, endedMs: 50, servedIndex: 0 }]),
+      ).toEqual([cheapLeg()]);
+      expect(one(cheapLeg({ end, servedIndex: 0 }))).not.toBeNull();
+    });
+  });
+
+  it('keeps an executed-leg sequence a walk can produce, and nulls any other', () => {
+    const esc = { leg: 'escalation', end: 'served', endedMs: 50, servedIndex: 0 };
+    expect(routeLegsColumn([primary()])).not.toBeNull();
+    expect(routeLegsColumn([cheapLeg()])).not.toBeNull();
+    expect(routeLegsColumn([cheapLeg(), esc])).not.toBeNull();
+    expect(routeLegsColumn([esc])).toBeNull();
+    expect(routeLegsColumn([esc, cheapLeg()])).toBeNull();
+    expect(routeLegsColumn([cheapLeg(), cheapLeg()])).toBeNull();
+    expect(routeLegsColumn([primary(), esc])).toBeNull();
+    expect(routeLegsColumn([primary(), primary()])).toBeNull();
+    expect(routeLegsColumn([cheapLeg(), primary()])).toBeNull();
+  });
+
+  it('keeps at most 2 legs, dropping a malformed one first', () => {
+    const esc = { leg: 'escalation', end: 'served', endedMs: 50, servedIndex: 0 };
+    expect(routeLegsColumn([cheapLeg(), esc, esc])).toEqual([cheapLeg(), esc]);
+    // a malformed leg is dropped, and what remains is judged as a sequence
+    expect(routeLegsColumn([primary({ end: 'bogus' }), primary()])).toEqual([primary()]);
+    // dropping the cheap leg leaves an escalation alone: not a walk's sequence
+    expect(routeLegsColumn([cheapLeg({ endedMs: -1 }), esc])).toBeNull();
+  });
+
+  it('truncates the deferral and clamp lists at 32', () => {
+    const deferred = Array.from({ length: 40 }, (_, i) => ({
+      index: i + 1,
+      model: `m${i}`,
+      reason: 'output_cap',
+      cap: 8,
+    }));
+    const clamps = Array.from({ length: 40 }, (_, i) => ({ index: i, model: `m${i}`, to: 8 }));
+    const leg = one(primary({ ask: 100, deferred, clamps })) as RouteLeg;
+    expect(leg.deferred).toHaveLength(ROUTE_LEG_LIST_MAX);
+    expect(leg.clamps).toHaveLength(ROUTE_LEG_LIST_MAX);
+    expect(leg.deferred).toEqual(deferred.slice(0, 32));
+  });
+
+  it('drops a leg whose list is malformed: not a list, a bad entry, a bad capability set', () => {
+    expect(one(primary({ deferred: 'A' }))).toBeNull();
+    expect(one(primary({ clamps: { index: 0 } }))).toBeNull();
+    expect(one(primary({ deferred: [null] }))).toBeNull();
+    const cap = (capabilities: unknown) =>
+      one(primary({ deferred: [{ index: 1, model: 'm', reason: 'capability', capabilities }] }));
+    expect(cap(['vision'])).not.toBeNull();
+    expect(cap([])).toBeNull();
+    expect(cap(['vision', 'vision'])).toBeNull();
+    expect(cap('vision')).toBeNull();
+  });
+
+  it('keeps the ask only beside an output-cap deferral or a clamp', () => {
+    const capOnly = [{ index: 1, model: 'm', reason: 'capability', capabilities: ['tools'] }];
+    expect(one(primary({ ask: 100, deferred: capOnly }))).toEqual(primary({ deferred: capOnly }));
+    expect(one(primary({ ask: 100 }))).toEqual(primary());
+    const outputCap = [{ index: 1, model: 'm', reason: 'output_cap', cap: 8 }];
+    expect(one(primary({ ask: 100, deferred: outputCap }))).toEqual(
+      primary({ ask: 100, deferred: outputCap }),
+    );
+  });
+
+  // record-route-legs (codex review of the implementation): an output-cap fact is stated
+  // against the request's ask, so a deferral or a clamp without its ask drops the leg.
+  it('drops a leg whose output-cap deferral or clamp has no ask', () => {
+    const outputCap = [{ index: 1, model: 'm', reason: 'output_cap', cap: 8 }];
+    const clamps = [{ index: 0, model: 'm', to: 4 }];
+    expect(one(primary({ deferred: outputCap }))).toBeNull();
+    expect(one(primary({ clamps }))).toBeNull();
+    expect(one(primary({ ask: 100, clamps }))).toEqual(primary({ ask: 100, clamps }));
+  });
+
+  it('writes null for anything that leaves no leg', () => {
+    for (const v of [
+      undefined,
+      null,
+      [],
+      {},
+      'primary',
+      7,
+      [null],
+      [[]],
+      [primary({ end: 'x' })],
+    ]) {
+      expect(routeLegsColumn(v)).toBeNull();
+    }
+  });
+
+  it('never throws, even on a hostile value', () => {
+    const hostile = [
+      Object.defineProperty({}, 'leg', {
+        get() {
+          throw new Error('boom');
+        },
+        enumerable: true,
+      }),
+    ];
+    expect(() => routeLegsColumn(hostile)).not.toThrow();
+    expect(routeLegsColumn(hostile)).toBeNull();
+  });
+
+  it('pins a malformed record to null without failing the batch insert, and logs no value', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn');
+    const log = jest.spyOn(Logger.prototype, 'log');
+    const error = jest.spyOn(Logger.prototype, 'error');
+    try {
+      const { writer, insertMany, metrics } = makeWriter({});
+      const garbage = [
+        { leg: 'primary', end: 'served', endedMs: -1, servedIndex: 0, stopped: 'gpt-secret' },
+      ] as unknown as RouteLeg[];
+      const good: RouteLeg[] = [{ leg: 'primary', end: 'served', endedMs: 4, servedIndex: 0 }];
+      writer.enqueue(draft({ id: 'bad', routeLegs: garbage }));
+      writer.enqueue(draft({ id: 'good', routeLegs: good }));
+      writer.enqueue(draft({ id: 'none' }));
+      await writer.flush();
+      expect(insertMany).toHaveBeenCalledTimes(1); // one batch, no retry
+      const rows = (
+        insertMany.mock.calls[0] as [Principal, { id: string; routeLegs: unknown }[]]
+      )[1];
+      expect(rows.map((r) => [r.id, r.routeLegs])).toEqual([
+        ['bad', null],
+        ['good', good],
+        ['none', null],
+      ]);
+      expect(await metrics.metricsText()).not.toContain('polyrouter_log_rows_dropped_total 1');
+      for (const spy of [warn, log, error]) {
+        for (const call of spy.mock.calls) expect(JSON.stringify(call)).not.toContain('gpt-secret');
+      }
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+      error.mockRestore();
+    }
   });
 });

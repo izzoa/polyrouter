@@ -9,7 +9,7 @@ import {
   type PartialUsage,
   type ResolvedUsage,
 } from '@polyrouter/data-plane';
-import type { AttemptFailureEntry } from '@polyrouter/shared';
+import type { AttemptFailureEntry, RouteLeg } from '@polyrouter/shared';
 import type {
   BodyCaptureMode,
   BodyCaptureOverride,
@@ -119,10 +119,15 @@ export interface RecordingContext {
   /** Per-attempt failure metadata (add-fallback-attempt-detail): the pre-commit
    * walked failure/skip trail across every executed leg, composed by the proxy's
    * context builders (leg-qualified for cascade legs, terminal marker set by
-   * error identity). Persisted on `error` and `fallback` rows and on an escalated
-   * `success` row (keep-cheap-leg-attempt-trail), never on a `cancelled` one — the
-   * recorder gates centrally below, separately from the terminal error detail. */
+   * error identity). Persisted on `error`, `fallback` and `cancelled` rows and on
+   * an escalated `success` row; discarded only on a `success` that did not escalate.
+   * The recorder gates centrally below, separately from the terminal error detail. */
   readonly attemptFailures?: readonly AttemptFailureEntry[];
+  /** The route record (record-route-legs): one entry per executed leg of the walk
+   * that settled this row, in execution order, built by the proxy's context
+   * builders (`routeLegsOf`). Persisted on EVERY status when non-empty, `cancelled`
+   * included; absent on rows no walk produced (batch settlement). */
+  readonly routeLegs?: readonly RouteLeg[];
   /** The L2-ambiguous request's IN-MEMORY embedding + its decision-time learning
    * gate (add-semantic-learning D1/D3). Set ONLY by the proxy's `servedFrom()`
    * (cascade-settle) — NEVER by any other context builder — and consumed ONLY by
@@ -294,15 +299,25 @@ export class RequestRecorder {
         // of why it was needed. An ESCALATED `success` keeps it too
         // (keep-cheap-leg-attempt-trail design D1): its status reads the escalation leg
         // alone, so a cheap leg that failed before the strong tier served cleanly is
-        // `success`, and the trail is the only record of that leg. A `success` that did
-        // not escalate (no member failed) and every `cancelled` row keep null — a cancel's
-        // in-flight member is never in memory, so its trail would end one member early.
+        // `success`, and the trail is the only record of that leg. A `cancelled` row
+        // keeps the members its walk recorded before the client left (record-route-legs
+        // design D6): the member in flight did not fail, so by design it is never a
+        // trail entry — the route record's `stopped` names it — and the trail is whole.
+        // Only a `success` that did not escalate (no member failed) keeps null.
         ...((outcome.status === 'error' ||
           outcome.status === 'fallback' ||
+          outcome.status === 'cancelled' ||
           (outcome.status === 'success' && outcome.escalated === true)) &&
         ctx.attemptFailures !== undefined &&
         ctx.attemptFailures.length > 0
           ? { attemptFailures: ctx.attemptFailures }
+          : {}),
+        // The route record rides EVERY status (record-route-legs design D6): how each
+        // leg ended is the walk's fact whatever the row's status says. Each leg's
+        // `endedMs` is clamped to this row's `duration_ms` — both are wall-clock reads
+        // from `startedAt`, so a backward clock step could otherwise invert them.
+        ...(ctx.routeLegs !== undefined && ctx.routeLegs.length > 0
+          ? { routeLegs: clampEndedMs(ctx.routeLegs, durationMs) }
           : {}),
         ...spanContextOf(),
       };
@@ -445,6 +460,13 @@ function bodiesFor(ctx: RecordingContext, outcome: RecordOutcome): CapturedBodyD
     });
   }
   return drafts;
+}
+
+/** The route record with each leg's `endedMs` no later than the row's `duration_ms`
+ * (record-route-legs design D6): `endedMs <= duration_ms` holds for every row even
+ * across a backward wall-clock step between the two reads. */
+function clampEndedMs(legs: readonly RouteLeg[], durationMs: number): RouteLeg[] {
+  return legs.map((l) => (l.endedMs > durationMs ? { ...l, endedMs: durationMs } : l));
 }
 
 function pricingOf(ctx: RecordingContext): DraftPricing {

@@ -7,7 +7,7 @@ import { APP_FILTER } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { loadConfig, type AttemptFailureEntry } from '@polyrouter/shared';
+import { loadConfig, type AttemptFailureEntry, type RouteLeg } from '@polyrouter/shared';
 import {
   PERSISTENCE_PORT,
   POLYROUTER_USER_AGENT,
@@ -377,9 +377,33 @@ describe('cascade routing e2e', () => {
     cost: number | null;
     usageEstimated: boolean;
     inputPriceSnapshot: number | null;
+    durationMs: number;
+    routeLegs: RouteLeg[] | null;
   }> {
     const logs = await port.requestLogs.list(principal);
     return logs[logs.length - 1]!;
+  }
+  type Row = Awaited<ReturnType<typeof log>>;
+
+  /** One expected route-record leg (record-route-legs); its `endedMs` is checked by
+   * `expectLegTimes`, so any number matches here. */
+  const leg = (l: Omit<RouteLeg, 'endedMs'>): RouteLeg => ({
+    ...l,
+    endedMs: expect.any(Number) as number,
+  });
+  /** record-route-legs D4: every leg's `endedMs` is a non-negative integer, the legs end
+   * in execution order — `endedMs(cheap) <= endedMs(escalation)` — and no leg ends after
+   * the row's `duration_ms`, which is read later from the same origin. */
+  function expectLegTimes(row: Row): void {
+    const legs = row.routeLegs ?? [];
+    expect(legs.length).toBeGreaterThan(0);
+    let previous = 0;
+    for (const l of legs) {
+      expect(Number.isInteger(l.endedMs)).toBe(true);
+      expect(l.endedMs).toBeGreaterThanOrEqual(previous);
+      previous = l.endedMs;
+    }
+    expect(previous).toBeLessThanOrEqual(row.durationMs);
   }
 
   async function sendWith(
@@ -482,6 +506,9 @@ describe('cascade routing e2e', () => {
     expect(row.structuralBandSource).toBe('threshold');
     expect(row.structuralScore).not.toBeNull();
     expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);
+    // record-route-legs: the kept cheap answer is the cheap leg's `served` end — one leg.
+    expect(row.routeLegs).toEqual([leg({ leg: 'cheap', end: 'served', servedIndex: 0 })]);
+    expectLegTimes(row);
     await setBand('auto_low', 'cheap-bad');
   });
 
@@ -502,6 +529,13 @@ describe('cascade routing e2e', () => {
     expect(row.escalated).toBe(true);
     expect(row.qualitySignal).toBe(0);
     expect(row.escalationSource).toBe('quality_gate'); // the answer was judged bad
+    // record-route-legs: both legs in execution order. `gate_failed` is the cheap end
+    // `quality_gate` projects from, and the strong tier's first member served.
+    expect(row.routeLegs).toEqual([
+      leg({ leg: 'cheap', end: 'gate_failed', servedIndex: 0 }),
+      leg({ leg: 'escalation', end: 'served', servedIndex: 0 }),
+    ]);
+    expectLegTimes(row);
     const attempts = await port.requestAttempts.listForRequest(principal, row.id);
     expect(attempts).toHaveLength(1);
     expect(attempts[0]!.modelId).toBe(modelId['cheapBad']); // the superseded cheap call
@@ -522,6 +556,14 @@ describe('cascade routing e2e', () => {
     expect(row.tierAssigned).toBe('default'); // strong failed → default served
     expect(row.modelId).toBe(modelId['default']);
     expect(row.escalated).toBe(true);
+    // record-route-legs: the escalation chain is strong ++ default, so the rescue is the
+    // escalation leg's member 1; the cheap answer was judged bad.
+    expect(row.escalationSource).toBe('quality_gate');
+    expect(row.routeLegs).toEqual([
+      leg({ leg: 'cheap', end: 'gate_failed', servedIndex: 0 }),
+      leg({ leg: 'escalation', end: 'served', servedIndex: 1 }),
+    ]);
+    expectLegTimes(row);
     await setBand('auto_high', 'premium');
   });
 
@@ -552,6 +594,13 @@ describe('cascade routing e2e', () => {
       expect(entries[entries.length - 1]).toMatchObject({ leg: 'escalation', terminal: true });
       expect(entries.filter((e) => e.terminal === true)).toHaveLength(1);
       for (const e of entries) expect(e).toMatchObject({ kind: 'unavailable', dispatched: true });
+      // record-route-legs: both legs exhausted, neither naming a stopping member.
+      expect(row.escalationSource).toBe('cheap_error');
+      expect(row.routeLegs).toEqual([
+        leg({ leg: 'cheap', end: 'exhausted' }),
+        leg({ leg: 'escalation', end: 'exhausted' }),
+      ]);
+      expectLegTimes(row);
     } finally {
       await port.routingEntries.replaceForTier(principal, defaultTierId, [modelId['default']!]);
       await setBand('auto_low', 'cheap-bad');
@@ -573,7 +622,7 @@ describe('cascade routing e2e', () => {
     // keep-cheap-leg-attempt-trail: the cut is BEFORE response headers (the stub never
     // puts them on the wire), and the strong tier served cleanly — the row is `success`
     // and still keeps the cheap call the deadline cut off.
-    expectDeadlineCutRow(row);
+    expectDeadlineCutRow(row, 'oai-hang');
     await setBand('auto_low', 'cheap-bad');
   });
 
@@ -591,7 +640,7 @@ describe('cascade routing e2e', () => {
       expect(cheapCall?.headersFlushed).toBe(true); // the headers were on the wire
       const row = await log();
       expect(row.modelId).toBe(modelId['strong']);
-      expectDeadlineCutRow(row);
+      expectDeadlineCutRow(row, 'oai-stallhdr');
     } finally {
       await setBand('auto_low', 'cheap-bad');
     }
@@ -609,14 +658,14 @@ describe('cascade routing e2e', () => {
       const row = await log();
       expect(row.modelId).toBe(modelId['strong']);
       expect(row.escalationSource).toBe('cheap_error');
-      expectDeadlineCutRow(row);
+      expectDeadlineCutRow(row, 'oai-hang');
     } finally {
       await setBand('auto_low', 'cheap-bad');
     }
   });
 
   /** The row a cheap deadline cut leaves when the strong tier then serves cleanly. */
-  function expectDeadlineCutRow(row: Awaited<ReturnType<typeof log>>): void {
+  function expectDeadlineCutRow(row: Row, cheapModel: string): void {
     expect(row.status).toBe('success'); // status reads the escalation leg alone
     expect(row.escalated).toBe(true);
     expect(row.attemptFailures).toHaveLength(1);
@@ -624,6 +673,7 @@ describe('cascade routing e2e', () => {
     expect(entry).toMatchObject({
       leg: 'cheap',
       index: 0,
+      model: cheapModel,
       kind: 'unavailable',
       dispatched: true,
       stopReason: 'deadline',
@@ -631,6 +681,20 @@ describe('cascade routing e2e', () => {
     expect(entry).not.toHaveProperty('status');
     expect(entry).not.toHaveProperty('terminal');
     expect(row.errorKind).toBeNull(); // a served row carries no terminal error detail
+    // record-route-legs: the cut ends the cheap walk at once — `deadline`, never
+    // `exhausted`, even on the only cheap member — and its `stopped` field names the
+    // member the RT-2 entry records, at the same index (sent, no kind or status). The
+    // deadline adds no second trail entry, and `cheap_error` projects from it.
+    expect(row.escalationSource).toBe('cheap_error');
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'cheap',
+        end: 'deadline',
+        stopped: { index: entry!.index, model: entry!.model, sent: true },
+      }),
+      leg({ leg: 'escalation', end: 'served', servedIndex: 0 }),
+    ]);
+    expectLegTimes(row);
   }
 
   it('cancelled and post-commit rows carry the verdict too (add-auto-decision-telemetry)', async () => {
@@ -680,6 +744,14 @@ describe('cascade routing e2e', () => {
     expect(row.escalated).toBe(false);
     expect(row.decisionLayer).toBe('cascade');
     expect(row.modelId).toBe(modelId['cheapHang']); // the cheap model — NO strong-tier escalation
+    // record-route-legs: the cheap member in flight is named by the route record (sent,
+    // no kind or status), never by a trail entry — it did not fail, so the trail is empty.
+    expect(row.routeLegs).toEqual([
+      leg({ leg: 'cheap', end: 'cancelled', stopped: { index: 0, model: 'oai-hang', sent: true } }),
+    ]);
+    expectLegTimes(row);
+    expect(row.attemptFailures).toBeNull();
+    expect(row.routingReason).not.toContain('@oai-hang');
     // The verdict existed before the outcome — a cancelled row carries it too
     // (add-auto-decision-telemetry).
     expect(row.structuralBand).toBe('ambiguous');
@@ -745,6 +817,13 @@ describe('cascade routing e2e', () => {
     const row = await log();
     expect(row.modelId).toBe(modelId['strong']);
     expect(row.escalated).toBe(true);
+    // record-route-legs: the streamed path walks the cheap leg buffered, then commits the
+    // strong stream — its `endedMs` is the commit instant, after the cheap leg's.
+    expect(row.routeLegs).toEqual([
+      leg({ leg: 'cheap', end: 'gate_failed', servedIndex: 0 }),
+      leg({ leg: 'escalation', end: 'served', servedIndex: 0 }),
+    ]);
+    expectLegTimes(row);
   });
 
   // fix-bad-request-dead-end INVERTS A-21 for `bad_request`. The strong tier is
@@ -764,6 +843,14 @@ describe('cascade routing e2e', () => {
     expect(row.modelId).toBe(modelId['cheapOversized']); // never reached the strong tier
     expect(row.escalated).toBe(false);
     expect(row.errorKind).toBe('oversized_response');
+    // record-route-legs: the one cheap leg, stopped by the over-cap member (sent).
+    expect(row.routeLegs).toHaveLength(1);
+    expect(row.routeLegs![0]).toMatchObject({
+      leg: 'cheap',
+      end: 'stopped',
+      stopped: { index: 0, model: 'oai-oversized', sent: true, kind: 'oversized_response' },
+    });
+    expectLegTimes(row);
     await setBand('auto_low', 'cheap-bad');
   }, 20_000);
 
@@ -797,6 +884,13 @@ describe('cascade routing e2e', () => {
       row.errorRequestId,
       row.errorMarkers,
     ]).toEqual([null, null, null, null, null]);
+    // record-route-legs: the only cheap member failed retryably — `exhausted`, with no
+    // served or stopping member — and `cheap_error` projects from it.
+    expect(row.routeLegs).toEqual([
+      leg({ leg: 'cheap', end: 'exhausted' }),
+      leg({ leg: 'escalation', end: 'served', servedIndex: 0 }),
+    ]);
+    expectLegTimes(row);
     await setBand('auto_low', 'cheap-bad');
   });
 
@@ -824,6 +918,17 @@ describe('cascade routing e2e', () => {
     expect(row.modelId).toBe(modelId['cheapLegal']); // never reached the strong tier
     expect(row.escalated).toBe(false);
     expect(row.routingReason).toContain('cheap failed non-retryably (policy_block)');
+    // record-route-legs (cascade-routing "A stopped cheap leg escalates only on a kind
+    // shouldFallback allows"): one cheap leg, stopped with its kind and status.
+    expect(row.escalationSource).toBeNull();
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'cheap',
+        end: 'stopped',
+        stopped: { index: 0, model: 'oai-legal', sent: true, kind: 'policy_block', status: 451 },
+      }),
+    ]);
+    expectLegTimes(row);
     await setBand('auto_low', 'cheap-bad');
   });
 
@@ -834,6 +939,14 @@ describe('cascade routing e2e', () => {
     const row = await log();
     expect(row.modelId).toBe(modelId['cheapLegal']);
     expect(row.escalated).toBe(false);
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'cheap',
+        end: 'stopped',
+        stopped: { index: 0, model: 'oai-legal', sent: true, kind: 'policy_block', status: 451 },
+      }),
+    ]);
+    expectLegTimes(row);
     await setBand('auto_low', 'cheap-bad');
   });
 
@@ -865,6 +978,12 @@ describe('cascade routing e2e', () => {
       expect(mine).toBeDefined(); // escalated into the seeded mid-error strong model, via cascade
       expect(mine!.escalated).toBe(true);
       expect(mine!.status).toBe('error'); // post-commit terminal error, not a silent swap
+      // record-route-legs: a leg's end is not the row's status — the committed strong
+      // member served; what happened after the commit is the row's `error`.
+      expect(mine!.routeLegs).toEqual([
+        leg({ leg: 'cheap', end: 'gate_failed', servedIndex: 0 }),
+        leg({ leg: 'escalation', end: 'served', servedIndex: 0 }),
+      ]);
     } finally {
       await setBand('auto_high', 'premium'); // restore the fixture's default strong band
     }
@@ -879,6 +998,9 @@ describe('cascade routing e2e', () => {
     expect(row.modelId).toBe(modelId['cheapGood']);
     expect(row.escalated).toBe(false);
     expect(row.inputTokens).toBeGreaterThan(0); // billed from the buffered cheap response
+    // record-route-legs: a kept cheap answer replayed as the client stream is `served`.
+    expect(row.routeLegs).toEqual([leg({ leg: 'cheap', end: 'served', servedIndex: 0 })]);
+    expectLegTimes(row);
     await setBand('auto_low', 'cheap-bad');
   });
 
@@ -900,6 +1022,11 @@ describe('cascade routing e2e', () => {
       const row = await log();
       expect(row.decisionLayer).toBe('cascade');
       expect(row.escalated).toBe(true);
+      expect(row.routeLegs).toEqual([
+        leg({ leg: 'cheap', end: 'gate_failed', servedIndex: 0 }),
+        leg({ leg: 'escalation', end: 'exhausted' }),
+      ]);
+      expectLegTimes(row);
       const attempts = await port.requestAttempts.listForRequest(principal, row.id);
       expect(attempts).toHaveLength(1);
       expect(attempts[0]!.modelId).toBe(modelId['cheapBad']); // the billed cheap call
@@ -1334,6 +1461,16 @@ describe('cascade routing e2e', () => {
           const row = await log();
           expectBilled(row);
           expect(row.escalated).toBe(true);
+          // record-route-legs: the deadline cut names the hung member; the escalation exhausted.
+          expect(row.routeLegs).toEqual([
+            leg({
+              leg: 'cheap',
+              end: 'deadline',
+              stopped: { index: 0, model: 'oai-hang', sent: true },
+            }),
+            leg({ leg: 'escalation', end: 'exhausted' }),
+          ]);
+          expectLegTimes(row);
         });
       },
     );
@@ -1460,6 +1597,9 @@ describe('cascade routing e2e', () => {
           });
           expect(row.inputTokens).toBeGreaterThan(0);
           expect(await port.requestAttempts.listForRequest(principal, row.id)).toHaveLength(0);
+          // record-route-legs: the cancel landed before the first cheap member: no stopper.
+          expect(row.routeLegs).toEqual([leg({ leg: 'cheap', end: 'cancelled' })]);
+          expect(row.attemptFailures).toBeNull();
         } finally {
           await setBand('auto_low', 'cheap-bad');
         }
@@ -1484,6 +1624,16 @@ describe('cascade routing e2e', () => {
         // An attempt was in flight when the client left: not provably unbilled.
         expect(logs[0]).toMatchObject({ status: 'cancelled', billed: true, escalated: false });
         expect(logs[0]!.cost).toBeGreaterThan(0);
+        // record-route-legs: the hung cheap member in flight is the leg's stopper, not a
+        // trail entry (the fresh fixture's model is `oai-hang` on its own provider).
+        expect(logs[0]!.routeLegs).toEqual([
+          leg({
+            leg: 'cheap',
+            end: 'cancelled',
+            stopped: { index: 0, model: 'oai-hang', sent: true },
+          }),
+        ]);
+        expect(logs[0]!.attemptFailures).toBeNull();
       } finally {
         await setBand('auto_low', 'cheap-bad');
       }

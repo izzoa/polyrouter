@@ -1,20 +1,37 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_UNATTRIBUTED,
+  ASKED,
   ATTEMPTS_NOT_RECORDED,
   breakdownToSpend,
+  CAUSE_CHEAP_DEADLINE,
   CAUSE_CHEAP_DID_NOT_SERVE,
+  CAUSE_CHEAP_EXHAUSTED,
+  CAUSE_CHEAP_STOPPED,
+  CAUSE_NOT_DELIVERED,
   CAUSE_QUALITY_GATE,
   CHEAP_LEG,
+  clampText,
   DEADLINE_LABEL,
   DEADLINE_LABEL_CHEAP,
+  DEFERRED,
+  ENDED_AT,
   ESCALATION_LEG,
   escalationCause,
   QUALITY_GATE_PASSED,
   escalationRate,
   fallbackRate,
   filterToRequestParams,
+  IN_FLIGHT,
+  LACKS_TOOLS,
+  LACKS_TOOLS_AND_VISION,
+  LACKS_VISION,
   NOT_BILLED_NOTE,
+  OUTPUT_CAP,
+  OUTPUT_CAPPED_AT,
+  outputCapText,
   rowCostLabel,
   rowCostParts,
   isTerminalSkip,
@@ -32,6 +49,7 @@ import {
   TRACE_NOT_RECORDED,
   USAGE_ESTIMATED_NOTE,
   type RouteTraceAttemptNode,
+  type RouteTraceDeferralNode,
   type RouteTraceLegNode,
   type RouteTraceNode,
   type RouteTraceOutcomeNode,
@@ -44,6 +62,8 @@ import {
   type AttemptFailureEntry,
   type RequestRow,
   type RequestStatus,
+  type RouteDeferral,
+  type RouteLeg,
   type TimeseriesPoint,
 } from './api';
 import { fmtElapsed } from './batchBand';
@@ -126,6 +146,7 @@ const ROW: RequestRow = {
   errorRequestId: null,
   errorMarkers: null,
   attemptFailures: null,
+  routeLegs: null,
   hasBodies: false,
 };
 
@@ -647,6 +668,7 @@ describe('toRouteTrace / isTerminalSkip — the structural fallback trail (add-f
         label: 'unavailable · HTTP 529',
         stop: null,
         markers: null,
+        clamp: null,
         text: 'gpt-x · unavailable · HTTP 529',
       },
       {
@@ -657,6 +679,7 @@ describe('toRouteTrace / isTerminalSkip — the structural fallback trail (add-f
         label: 'rate_limit',
         stop: null,
         markers: null,
+        clamp: null,
         text: 'strong-y · rate_limit',
       },
       {
@@ -666,6 +689,7 @@ describe('toRouteTrace / isTerminalSkip — the structural fallback trail (add-f
         label: 'skipped — circuit open (provider not contacted)',
         stop: null,
         markers: null,
+        clamp: null,
         text: 'grok-z · skipped — circuit open (provider not contacted)',
       },
     ]);
@@ -1213,6 +1237,7 @@ describe('the route trace lights only a served outcome (add-route-trace-inspecto
         result: 'served',
         latency: '1.24s',
         keptQuality: null,
+        clamp: null,
         text: 'P · M · served · 1.24s',
       });
       // Exactly one outcome node, and it is the only lit node.
@@ -1287,6 +1312,7 @@ describe('the route trace lights only a served outcome (add-route-trace-inspecto
       result: 'cancelled by client',
       latency: '800ms',
       keptQuality: null,
+      clamp: null,
       text: 'OpenAI · GPT · cancelled by client · 800ms',
     });
   });
@@ -2167,37 +2193,100 @@ describe('no commit marker (add-route-trace-inspector 3.4)', () => {
    * `3h 1m`. */
   const TIME = /\d+h \d+m|\d+m \d{2}s|\d+(?:\.\d+)?(?:ms|s|m)\b/g;
 
-  it('over every status, no node mentions a first token or a commit, and only the outcome carries a time', () => {
+  it('over every status, no node mentions a first token or a commit, and only the outcome and a recorded cheap end carry a time', () => {
     const statuses: RequestStatus[] = ['success', 'fallback', 'error', 'cancelled', 'throttled'];
-    const shapes: Partial<RequestRow>[] = [
-      {},
-      {
-        attemptFailures: [
-          entry({ model: 'a', status: 429 }),
-          entry({ model: 'b', dispatched: false, terminal: true }),
-        ],
-      },
-      {
-        decisionLayer: 'cascade',
-        escalated: true,
-        escalationSource: 'quality_gate',
-        qualitySignal: 0.42,
-        attemptCostMicros: 3_100,
-        attemptFailures: [entry({ model: 'c', leg: 'cheap' })],
-      },
-      { batchId: 'batch_01', priceMode: 'batch', durationMs: 7_412_300 },
-      { durationMs: 412 },
-      { durationMs: 125_000 },
+    const escalatedCascade: Partial<RequestRow> = {
+      decisionLayer: 'cascade',
+      escalated: true,
+      escalationSource: 'cheap_error',
+      durationMs: 41_250,
+    };
+    /** Each shape, and the one time its escalation row may state (record-route-legs design D7):
+     * the route record's cheap-leg end, `at <fmtLatency(endedMs)>`. Every other recorded
+     * `endedMs` (a primary or escalation leg's, a streamed leg's commit instant included) and a
+     * row without a record state none. */
+    const shapes: [Partial<RequestRow>, string | null][] = [
+      [{}, null],
+      [
+        {
+          attemptFailures: [
+            entry({ model: 'a', status: 429 }),
+            entry({ model: 'b', dispatched: false, terminal: true }),
+          ],
+        },
+        null,
+      ],
+      [
+        {
+          decisionLayer: 'cascade',
+          escalated: true,
+          escalationSource: 'quality_gate',
+          qualitySignal: 0.42,
+          attemptCostMicros: 3_100,
+          attemptFailures: [entry({ model: 'c', leg: 'cheap' })],
+        },
+        null,
+      ],
+      [{ batchId: 'batch_01', priceMode: 'batch', durationMs: 7_412_300 }, null],
+      [{ durationMs: 412 }, null],
+      [{ durationMs: 125_000 }, null],
+      // A streamed primary leg's `endedMs` is its commit instant: never drawn.
+      [{ routeLegs: [{ leg: 'primary', end: 'served', endedMs: 450, servedIndex: 0 }] }, null],
+      [
+        {
+          ...escalatedCascade,
+          routeLegs: [
+            { leg: 'cheap', end: 'deadline', endedMs: 30_020 },
+            { leg: 'escalation', end: 'served', endedMs: 33_480, servedIndex: 0 },
+          ],
+        },
+        '30.02s',
+      ],
+      [
+        {
+          ...escalatedCascade,
+          escalationSource: 'quality_gate',
+          routeLegs: [
+            { leg: 'cheap', end: 'gate_failed', endedMs: 2_450, servedIndex: 0 },
+            { leg: 'escalation', end: 'stopped', endedMs: 2_900 },
+          ],
+        },
+        '2.45s',
+      ],
+      // A cheap end that states no cause (a cancel) keeps the recorded source's words, untimed.
+      [
+        {
+          ...escalatedCascade,
+          routeLegs: [
+            { leg: 'cheap', end: 'cancelled', endedMs: 800 },
+            { leg: 'escalation', end: 'served', endedMs: 900, servedIndex: 0 },
+          ],
+        },
+        null,
+      ],
+      // A kept cheap answer: no escalation row, so no time but the latency.
+      [
+        {
+          decisionLayer: 'cascade',
+          qualitySignal: 0.87,
+          routeLegs: [{ leg: 'cheap', end: 'served', endedMs: 640, servedIndex: 0 }],
+        },
+        null,
+      ],
     ];
     let checked = 0;
     for (const status of statuses)
-      for (const shape of shapes) {
+      for (const [shape, at] of shapes) {
         const r: RequestRow = { ...ROW, ...shape, status };
         const trace = toRouteTrace(r);
         for (const n of trace) expect(n.text).not.toMatch(/first token|commit/i);
         const outcome = outcomeOf(trace);
         expect(outcome.text.match(TIME)).toEqual([outcome.latency]);
-        for (const n of trace.slice(0, -1)) expect(n.text.match(TIME)).toBeNull();
+        for (const n of trace.slice(0, -1)) {
+          const timed = at !== null && n.kind === 'leg' && n.leg === 'escalation';
+          expect(n.text.match(TIME), `${status}: ${n.text}`).toEqual(timed ? [at] : null);
+          if (timed) expect(n.text.endsWith(` · at ${at}`)).toBe(true);
+        }
         checked += 1;
       }
     expect(checked).toBe(statuses.length * shapes.length);
@@ -2515,6 +2604,7 @@ describe('a cheap call cut off by the deadline reads as such (keep-cheap-leg-att
       label: 'no reply by the cheap deadline',
       stop: 'deadline',
       markers: null,
+      clamp: null,
       text: 'cheap-1 · no reply by the cheap deadline',
     });
   });
@@ -2590,5 +2680,988 @@ describe('a cheap call cut off by the deadline reads as such (keep-cheap-leg-att
       'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
     ]);
     expect(toErrorView(row)).toBeNull();
+  });
+});
+
+/* ---- record-route-legs (task 7.2): the route trace draws the route record ------------- */
+
+/** One recorded leg: `endedMs` 1,200 unless overridden. */
+const leg = (over: Partial<RouteLeg> & Pick<RouteLeg, 'leg' | 'end'>): RouteLeg => ({
+  endedMs: 1_200,
+  ...over,
+});
+/** A capability deferral of the member at `index`. */
+const lacking = (
+  index: number,
+  model: string,
+  capabilities: ('tools' | 'vision')[],
+): RouteDeferral => ({ index, model, reason: 'capability', capabilities });
+/** An output-cap deferral of the member at `index`. */
+const capped = (index: number, model: string, cap: number): RouteDeferral => ({
+  index,
+  model,
+  reason: 'output_cap',
+  cap,
+});
+/** The trace's deferral rows, in drawn order. */
+const deferralsOf = (nodes: readonly RouteTraceNode[]): RouteTraceDeferralNode[] =>
+  nodes.filter((n): n is RouteTraceDeferralNode => n.kind === 'deferral');
+
+describe('the route record: contract strings (record-route-legs design D7)', () => {
+  it('exports every contract string DESIGN.md quotes', () => {
+    expect([
+      DEFERRED,
+      LACKS_TOOLS,
+      LACKS_VISION,
+      LACKS_TOOLS_AND_VISION,
+      OUTPUT_CAP,
+      ASKED,
+      OUTPUT_CAPPED_AT,
+      IN_FLIGHT,
+      CAUSE_CHEAP_EXHAUSTED,
+      CAUSE_CHEAP_DEADLINE,
+      CAUSE_NOT_DELIVERED,
+      CAUSE_CHEAP_STOPPED,
+      ENDED_AT,
+    ]).toEqual([
+      'deferred',
+      'lacks tools',
+      'lacks vision',
+      'lacks tools and vision',
+      'output cap',
+      'asked',
+      'output capped at',
+      'in flight',
+      'cheap leg exhausted',
+      'cheap deadline',
+      'cheap answer not delivered',
+      'cheap leg stopped',
+      'at',
+    ]);
+    expect(outputCapText('4,096', '100,000')).toBe('output cap 4,096 < 100,000 asked');
+    expect(outputCapText('4,096', null)).toBe('output cap 4,096');
+    expect(clampText('4,096')).toBe('output capped at 4,096');
+    expect(clampText('4,096', '100,000')).toBe('output capped at 4,096 of 100,000 asked');
+  });
+
+  it("DESIGN.md's Route Trace section quotes each one exactly", () => {
+    const design = readFileSync(join(import.meta.dirname, '../../../../DESIGN.md'), 'utf8');
+    const section = /### Route Trace \(signature\)\n([\s\S]*?)\n### /.exec(design)?.[1] ?? '';
+    expect(section, 'the Route Trace section').not.toBe('');
+    for (const quoted of [
+      'deferred · <model> · lacks vision',
+      LACKS_TOOLS,
+      LACKS_TOOLS_AND_VISION,
+      'output cap <cap> < <ask> asked',
+      'output capped at <to>',
+      'output capped at <to> of <ask> asked',
+      `<model> · ${IN_FLIGHT}`,
+      `escalation · ${CAUSE_QUALITY_GATE} · ${ENDED_AT} <t>`,
+      CAUSE_CHEAP_EXHAUSTED,
+      CAUSE_CHEAP_DEADLINE,
+      CAUSE_NOT_DELIVERED,
+      CAUSE_CHEAP_STOPPED,
+    ])
+      expect(section, quoted).toContain(`\`${quoted}`);
+  });
+});
+
+/** dashboard-analytics "A deferred member is named on a spine row". */
+describe('a deferred member is named on a spine row (record-route-legs 7.2)', () => {
+  it('a capability deferral is named on the spine, between the decision chip and the outcome', () => {
+    const r: RequestRow = {
+      ...ROW,
+      routeLegs: [
+        leg({
+          leg: 'primary',
+          end: 'served',
+          servedIndex: 1,
+          deferred: [lacking(0, 'gpt-4o-mini', ['vision'])],
+        }),
+      ],
+    };
+    const trace = toRouteTrace(r);
+    expect(trace.map((n) => n.text)).toEqual([
+      'openclaw',
+      'router · structural',
+      'deferred · gpt-4o-mini · lacks vision',
+      'OpenAI · GPT · served · 1.20s',
+    ]);
+    expect(deferralsOf(trace)).toEqual([
+      {
+        kind: 'deferral',
+        emphasis: 'neutral',
+        model: 'gpt-4o-mini',
+        lacks: 'lacks vision',
+        outputCap: null,
+        text: 'deferred · gpt-4o-mini · lacks vision',
+      },
+    ]);
+    expect(toInspectorView(r).trace).toEqual(trace);
+  });
+
+  it.each([
+    ['tools', [lacking(0, 'm', ['tools'])], 'deferred · m · lacks tools'],
+    ['vision', [lacking(0, 'm', ['vision'])], 'deferred · m · lacks vision'],
+    [
+      'tools and vision',
+      [lacking(0, 'm', ['vision', 'tools'])],
+      'deferred · m · lacks tools and vision',
+    ],
+    ['its output cap', [capped(0, 'm', 4_096)], 'deferred · m · output cap 4,096 < 100,000 asked'],
+    // One row for the member, the capability reason first, whatever the record's order.
+    [
+      'both, output cap listed first',
+      [capped(0, 'm', 4_096), lacking(0, 'm', ['vision'])],
+      'deferred · m · lacks vision · output cap 4,096 < 100,000 asked',
+    ],
+  ] as const)('a member deferred for %s reads its reason', (_why, deferred, text) => {
+    const r: RequestRow = {
+      ...ROW,
+      routeLegs: [leg({ leg: 'primary', end: 'served', servedIndex: 1, ask: 100_000, deferred })],
+    };
+    expect(deferralsOf(toRouteTrace(r)).map((n) => n.text)).toEqual([text]);
+  });
+
+  it('an output-cap deferral with no recorded ask states the cap alone, never blank', () => {
+    const r: RequestRow = {
+      ...ROW,
+      routeLegs: [
+        leg({ leg: 'primary', end: 'served', servedIndex: 1, deferred: [capped(0, 'm', 4_096)] }),
+      ],
+    };
+    expect(deferralsOf(toRouteTrace(r))[0]?.text).toBe('deferred · m · output cap 4,096');
+  });
+
+  it('one row per deferred member, in index order', () => {
+    const r: RequestRow = {
+      ...ROW,
+      routeLegs: [
+        leg({
+          leg: 'primary',
+          end: 'served',
+          servedIndex: 0,
+          ask: 100_000,
+          deferred: [
+            lacking(2, 'c', ['tools']),
+            capped(1, 'b', 8_192),
+            lacking(1, 'b', ['vision']),
+          ],
+        }),
+      ],
+    };
+    expect(deferralsOf(toRouteTrace(r)).map((n) => n.text)).toEqual([
+      'deferred · b · lacks vision · output cap 8,192 < 100,000 asked',
+      'deferred · c · lacks tools',
+    ]);
+  });
+
+  it('a deferred member is never a branch, and a row without a record draws no deferral row', () => {
+    const r: RequestRow = {
+      ...ROW,
+      status: 'fallback',
+      attemptFailures: [entry({ index: 0, model: 'a', status: 429 })],
+      routeLegs: [
+        leg({
+          leg: 'primary',
+          end: 'served',
+          servedIndex: 1,
+          deferred: [lacking(2, 'never-reached', ['tools'])],
+        }),
+      ],
+    };
+    const trace = toRouteTrace(r);
+    expect(trace.map((n) => n.kind)).toEqual([
+      'source',
+      'decision',
+      'deferral',
+      'attempt',
+      'outcome',
+    ]);
+    for (const a of attemptsOf(trace)) expect(a.model).not.toBe('never-reached');
+    // The routing reason never stands in for the record.
+    for (const routingReason of [
+      'auto → output_cap_deferred ~gpt-a(4096<100000)',
+      'auto → capability_deferred ~z-ai/glm-latest(vision)',
+    ]) {
+      const legacy = toRouteTrace({ ...ROW, routingReason });
+      expect(legacy.map((n) => n.kind)).toEqual(['source', 'decision', 'outcome']);
+      expect(legacy.map((n) => n.text).join(' ')).not.toMatch(/deferred|lacks|output cap/);
+    }
+    expect(deferralsOf(toRouteTrace(UNRECORDED_ESCALATION))).toEqual([]);
+  });
+
+  it("a leg's deferrals sit directly under its leg row, with no leg tag", () => {
+    const r: RequestRow = {
+      ...UNRECORDED_ESCALATION,
+      status: 'fallback',
+      attemptFailures: [
+        entry({ index: 0, model: 'cheap-1', kind: 'timeout', leg: 'cheap' }),
+        entry({ index: 0, model: 'strong-1', status: 429, leg: 'escalation' }),
+      ],
+      routeLegs: [
+        leg({
+          leg: 'cheap',
+          end: 'exhausted',
+          endedMs: 2_450,
+          deferred: [lacking(1, 'cheap-vl', ['vision'])],
+        }),
+        leg({
+          leg: 'escalation',
+          end: 'served',
+          endedMs: 38_000,
+          servedIndex: 1,
+          deferred: [lacking(2, 'strong-text', ['vision'])],
+        }),
+      ],
+    };
+    expect(traceTexts(r)).toEqual([
+      'Lobechat',
+      'router · cascade',
+      'cheap leg',
+      'deferred · cheap-vl · lacks vision',
+      'cheap-1 · timeout',
+      'escalation · cheap leg exhausted · at 2.45s',
+      'deferred · strong-text · lacks vision',
+      'strong-1 · rate_limit · HTTP 429',
+      'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+    ]);
+    for (const d of deferralsOf(toRouteTrace(r)))
+      expect(d.text).not.toMatch(/cheap leg|escalation/);
+  });
+});
+
+/** dashboard-analytics "A clamped call states its output cap". */
+describe('a clamped call states its output cap (record-route-legs 7.2)', () => {
+  it('a clamped served call states its cap on the lit outcome, with the ask or without', () => {
+    const served = (ask: number | undefined): RequestRow => ({
+      ...ROW,
+      routeLegs: [
+        leg({
+          leg: 'primary',
+          end: 'served',
+          servedIndex: 0,
+          ...(ask === undefined ? {} : { ask }),
+          clamps: [{ index: 0, model: 'GPT', to: 4_096 }],
+        }),
+      ],
+    });
+    const withAsk = outcomeOf(toRouteTrace(served(100_000)));
+    expect(withAsk).toMatchObject({ emphasis: 'lit', clamp: { to: '4,096', ask: '100,000' } });
+    expect(withAsk.text).toBe(
+      'OpenAI · GPT · served · 1.20s · output capped at 4,096 of 100,000 asked',
+    );
+    const noAsk = outcomeOf(toRouteTrace(served(undefined)));
+    expect(noAsk.clamp).toEqual({ to: '4,096', ask: null });
+    expect(noAsk.text).toBe('OpenAI · GPT · served · 1.20s · output capped at 4,096');
+  });
+
+  it('a kept cheap answer states its cap above its verdict', () => {
+    const r: RequestRow = {
+      ...CASCADE,
+      qualitySignal: 0.87,
+      routeLegs: [
+        leg({
+          leg: 'cheap',
+          end: 'served',
+          servedIndex: 0,
+          ask: 100_000,
+          clamps: [{ index: 0, model: 'Cheap', to: 4_096 }],
+        }),
+      ],
+    };
+    expect(outcomeOf(toRouteTrace(r)).text).toBe(
+      'Groq · Cheap · served · 1.20s · output capped at 4,096 of 100,000 asked · quality gate passed · q=0.87',
+    );
+  });
+
+  it('a clamped failed attempt states its cap after its markers, at the same leg and index', () => {
+    const r: RequestRow = {
+      ...ROW,
+      status: 'fallback',
+      attemptFailures: [
+        entry({ index: 0, model: 'a', status: 429, markers: ['tokens_per_minute'] }),
+      ],
+      routeLegs: [
+        leg({
+          leg: 'primary',
+          end: 'served',
+          servedIndex: 1,
+          ask: 100_000,
+          clamps: [{ index: 0, model: 'a', to: 4_096 }],
+        }),
+      ],
+    };
+    const [a] = attemptsOf(toRouteTrace(r));
+    expect(a).toMatchObject({ emphasis: 'failed', label: 'rate_limit · HTTP 429', clamp: '4,096' });
+    expect(a?.text).toBe('a · rate_limit · HTTP 429 · tokens_per_minute · output capped at 4,096');
+    // The served member was not clamped, so the outcome states none.
+    expect(outcomeOf(toRouteTrace(r)).clamp).toBeNull();
+  });
+
+  it('a clamp is read only at its own leg and index, and never on a skipped member', () => {
+    const r: RequestRow = {
+      ...UNRECORDED_ESCALATION,
+      status: 'fallback',
+      attemptFailures: [
+        entry({ index: 0, model: 'cheap-1', kind: 'timeout', leg: 'cheap' }),
+        entry({ index: 1, model: 'cheap-2', kind: 'unavailable', dispatched: false, leg: 'cheap' }),
+        entry({ index: 0, model: 'strong-1', status: 429, leg: 'escalation' }),
+      ],
+      routeLegs: [
+        leg({
+          leg: 'cheap',
+          end: 'exhausted',
+          clamps: [{ index: 1, model: 'cheap-2', to: 2_048 }],
+        }),
+        leg({
+          leg: 'escalation',
+          end: 'served',
+          servedIndex: 1,
+          clamps: [{ index: 0, model: 'strong-1', to: 8_192 }],
+        }),
+      ],
+    };
+    expect(attemptsOf(toRouteTrace(r)).map((a) => [a.model, a.clamp])).toEqual([
+      ['cheap-1', null],
+      ['cheap-2', null],
+      ['strong-1', '8,192'],
+    ]);
+  });
+
+  it('a clamp is read from the route record, never from the reason', () => {
+    const r: RequestRow = {
+      ...ROW,
+      status: 'fallback',
+      routingReason: 'auto → output_cap_clamped ~gpt-a→4096 → GPT',
+      attemptFailures: [entry({ index: 0, model: 'a', status: 429 })],
+    };
+    expect(traceTexts(r).join(' ')).not.toContain('output cap');
+  });
+
+  it('a superseded node and an unlit outcome state no cap', () => {
+    const gated: RequestRow = {
+      ...UNRECORDED_ESCALATION,
+      escalationSource: 'quality_gate',
+      qualitySignal: 0.42,
+      attemptCostMicros: 3_100,
+      priceSource: 'bundled',
+      routeLegs: [
+        leg({
+          leg: 'cheap',
+          end: 'gate_failed',
+          servedIndex: 0,
+          ask: 100_000,
+          clamps: [{ index: 0, model: 'cheap-1', to: 4_096 }],
+        }),
+        leg({ leg: 'escalation', end: 'served', servedIndex: 0 }),
+      ],
+    };
+    const committedError: RequestRow = {
+      ...ROW,
+      status: 'error',
+      routeLegs: [
+        leg({
+          leg: 'primary',
+          end: 'served',
+          servedIndex: 0,
+          ask: 100_000,
+          clamps: [{ index: 0, model: 'GPT', to: 4_096 }],
+        }),
+      ],
+    };
+    for (const r of [gated, committedError]) {
+      expect(traceTexts(r).join(' ')).not.toMatch(/output cap|4,096/);
+      expect(outcomeOf(toRouteTrace(r)).clamp).toBeNull();
+    }
+  });
+});
+
+/** dashboard-analytics "The member that stopped a walk is drawn". */
+describe('the member that stopped a walk is drawn (record-route-legs 7.2)', () => {
+  const failedA = entry({ index: 0, providerId: 'p1', model: 'gpt-a', status: 429 });
+
+  it('a non-retryable stop at a later member is a failed attempt, and the outcome names no one', () => {
+    const r: RequestRow = {
+      ...ROW,
+      status: 'error',
+      attemptFailures: [failedA],
+      routeLegs: [
+        leg({
+          leg: 'primary',
+          end: 'stopped',
+          stopped: { index: 1, model: 'gpt-b', sent: true, kind: 'policy_block', status: 451 },
+        }),
+      ],
+    };
+    const trace = toRouteTrace(r);
+    expect(trace.map((n) => n.text)).toEqual([
+      'openclaw',
+      'router · structural',
+      'gpt-a · rate_limit · HTTP 429',
+      'gpt-b · policy_block · HTTP 451',
+      'failed · 1.20s',
+    ]);
+    expect(attemptsOf(trace)[1]).toMatchObject({
+      emphasis: 'failed',
+      label: 'policy_block · HTTP 451',
+      stop: null,
+    });
+    expect(outcomeOf(trace)).toMatchObject({ emphasis: 'neutral', provider: null, model: null });
+    // What the outcome no longer names, the Decision section states as recorded.
+    expect(toInspectorView(r).recordedProvider).toBe('OpenAI');
+    // A stopper that recorded no status reads like any failed attempt without one.
+    const oversized: RequestRow = {
+      ...r,
+      routeLegs: [
+        leg({
+          leg: 'primary',
+          end: 'stopped',
+          stopped: { index: 1, model: 'gpt-b', sent: true, kind: 'oversized_response' },
+        }),
+      ],
+    };
+    expect(attemptsOf(toRouteTrace(oversized))[1]?.text).toBe('gpt-b · oversized_response');
+  });
+
+  it("a cancel's in-flight member is drawn neutral, never red, and the outcome names no one", () => {
+    const r: RequestRow = {
+      ...ROW,
+      status: 'cancelled',
+      durationMs: 800,
+      attemptFailures: [failedA],
+      routeLegs: [
+        leg({
+          leg: 'primary',
+          end: 'cancelled',
+          stopped: { index: 1, model: 'gpt-b', sent: true },
+        }),
+      ],
+    };
+    const trace = toRouteTrace(r);
+    expect(trace.map((n) => n.text)).toEqual([
+      'openclaw',
+      'router · structural',
+      'gpt-a · rate_limit · HTTP 429',
+      'gpt-b · in flight',
+      'cancelled by client · 800ms',
+    ]);
+    expect(attemptsOf(trace)[1]).toEqual({
+      kind: 'attempt',
+      emphasis: 'in_flight',
+      model: 'gpt-b',
+      label: 'in flight',
+      stop: null,
+      markers: null,
+      clamp: null,
+      text: 'gpt-b · in flight',
+    });
+    expect(outcomeOf(trace)).toMatchObject({ provider: null, model: null });
+  });
+
+  it('a route record adds its deferrals and its stopper to the walk, read as text in walk order', () => {
+    const r: RequestRow = {
+      ...ROW,
+      status: 'cancelled',
+      durationMs: 800,
+      attemptFailures: [failedA],
+      routeLegs: [
+        leg({
+          leg: 'primary',
+          end: 'cancelled',
+          ask: 100_000,
+          stopped: { index: 1, model: 'gpt-b', sent: true },
+          deferred: [lacking(2, 'gpt-text', ['tools'])],
+          clamps: [{ index: 1, model: 'gpt-b', to: 4_096 }],
+        }),
+      ],
+    };
+    const trace = toRouteTrace(r);
+    expect(trace.map((n) => n.kind)).toEqual([
+      'source',
+      'decision',
+      'deferral',
+      'attempt',
+      'attempt',
+      'outcome',
+    ]);
+    expect(trace.slice(2).map((n) => n.text)).toEqual([
+      'deferred · gpt-text · lacks tools',
+      'gpt-a · rate_limit · HTTP 429',
+      'gpt-b · in flight · output capped at 4,096',
+      'cancelled by client · 800ms',
+    ]);
+    // The in-flight and the failed member differ in their text alone.
+    const [failed, inFlight] = attemptsOf(trace);
+    expect(failed?.label).not.toBe(inFlight?.label);
+  });
+
+  it('a deadline stopper is drawn once: by its trail entry, or, with none, as that entry reads', () => {
+    const cut = entry({
+      index: 0,
+      model: 'cheap-1',
+      kind: 'unavailable',
+      leg: 'cheap',
+      stopReason: 'deadline',
+    });
+    const record: RouteLeg[] = [
+      leg({
+        leg: 'cheap',
+        end: 'deadline',
+        endedMs: 30_020,
+        stopped: { index: 0, model: 'cheap-1', sent: true },
+      }),
+      leg({ leg: 'escalation', end: 'served', endedMs: 38_100, servedIndex: 0 }),
+    ];
+    const expected = [
+      'Lobechat',
+      'router · cascade',
+      'cheap leg',
+      'cheap-1 · no reply by the cheap deadline',
+      'escalation · cheap deadline · at 30.02s',
+      'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+    ];
+    for (const attemptFailures of [[cut], null]) {
+      const texts = traceTexts({ ...UNRECORDED_ESCALATION, attemptFailures, routeLegs: record });
+      expect(texts).toEqual(expected);
+      expect(texts.filter((t) => t.includes('cheap-1'))).toHaveLength(1);
+      expect(texts.join(' ')).not.toContain('unavailable');
+    }
+  });
+
+  it.each(['stopped', 'deadline', 'cancelled'] as const)(
+    'an unsent stopper on a `%s` end is not drawn, and its end is still stated',
+    (end) => {
+      const stopped = {
+        index: 1,
+        model: 'unsent-b',
+        sent: false,
+        ...(end === 'stopped' ? { kind: 'policy_block' } : {}),
+      };
+      // On a final leg: no node, and the outcome names no provider or model.
+      const finalRow: RequestRow = {
+        ...ROW,
+        status: end === 'cancelled' ? 'cancelled' : 'error',
+        attemptFailures: [failedA],
+        routeLegs: [leg({ leg: 'primary', end, stopped })],
+      };
+      const trace = toRouteTrace(finalRow);
+      expect(trace.map((n) => n.text).join(' ')).not.toContain('unsent-b');
+      expect(attemptsOf(trace)).toHaveLength(1);
+      expect(outcomeOf(trace)).toMatchObject({ provider: null, model: null });
+      // On an escalated cheap leg: no node, and the escalation row states how it ended.
+      const cheapRow: RequestRow = {
+        ...UNRECORDED_ESCALATION,
+        routeLegs: [
+          leg({ leg: 'cheap', end, endedMs: 2_450, stopped }),
+          leg({ leg: 'escalation', end: 'served', servedIndex: 0 }),
+        ],
+      };
+      const texts = traceTexts(cheapRow);
+      expect(texts.join(' ')).not.toContain('unsent-b');
+      if (end !== 'cancelled')
+        expect(texts[3]).toMatch(/^escalation · cheap (leg stopped|deadline) · at 2\.45s$/);
+    },
+  );
+
+  it('a cascade that ended in its cheap leg draws its stopper under the one leg row', () => {
+    const stoppedRow: RequestRow = {
+      ...CASCADE,
+      status: 'error',
+      attemptFailures: [entry({ index: 0, model: 'cheap-0', leg: 'cheap' })],
+      routeLegs: [
+        leg({
+          leg: 'cheap',
+          end: 'stopped',
+          stopped: { index: 1, model: 'cheap-1', sent: true, kind: 'policy_block', status: 451 },
+        }),
+      ],
+    };
+    expect(traceTexts(stoppedRow)).toEqual([
+      'openclaw',
+      'router · cascade',
+      'cheap leg',
+      'cheap-0 · rate_limit',
+      'cheap-1 · policy_block · HTTP 451',
+      'failed · 1.20s',
+    ]);
+    const cancelledRow: RequestRow = {
+      ...CASCADE,
+      status: 'cancelled',
+      durationMs: 800,
+      routeLegs: [
+        leg({
+          leg: 'cheap',
+          end: 'cancelled',
+          stopped: { index: 0, model: 'cheap-0', sent: true },
+        }),
+      ],
+    };
+    expect(traceTexts(cancelledRow)).toEqual([
+      'openclaw',
+      'router · cascade',
+      'cheap leg',
+      'cheap-0 · in flight',
+      'cancelled by client · 800ms',
+    ]);
+  });
+
+  it("an escalation leg's stopper is that leg's last node, after its trail", () => {
+    const r: RequestRow = {
+      ...UNRECORDED_ESCALATION,
+      status: 'error',
+      durationMs: 3_100,
+      attemptFailures: [
+        entry({ index: 0, model: 'cheap-1', kind: 'timeout', leg: 'cheap', terminal: false }),
+        entry({ index: 0, model: 'strong-1', status: 429, leg: 'escalation' }),
+      ],
+      routeLegs: [
+        leg({ leg: 'cheap', end: 'exhausted', endedMs: 2_450 }),
+        leg({
+          leg: 'escalation',
+          end: 'stopped',
+          endedMs: 3_000,
+          // The same index as a CHEAP entry: legs keep their own index spaces.
+          stopped: { index: 0, model: 'strong-0', sent: true, kind: 'policy_block', status: 451 },
+        }),
+      ],
+    };
+    // strong-1 at escalation index 0 is the trail entry: the stopper there is drawn once, by it.
+    expect(traceTexts(r).slice(2)).toEqual([
+      'cheap leg',
+      'cheap-1 · timeout',
+      'escalation · cheap leg exhausted · at 2.45s',
+      'strong-1 · rate_limit · HTTP 429',
+      'failed · 3.10s',
+    ]);
+    const atNextIndex: RequestRow = {
+      ...r,
+      routeLegs: [
+        leg({ leg: 'cheap', end: 'exhausted', endedMs: 2_450 }),
+        leg({
+          leg: 'escalation',
+          end: 'stopped',
+          endedMs: 3_000,
+          stopped: { index: 1, model: 'strong-2', sent: true, kind: 'policy_block', status: 451 },
+        }),
+      ],
+    };
+    expect(traceTexts(atNextIndex).slice(-3)).toEqual([
+      'strong-1 · rate_limit · HTTP 429',
+      'strong-2 · policy_block · HTTP 451',
+      'failed · 3.10s',
+    ]);
+  });
+
+  it('a row without a route record draws no stopper', () => {
+    for (const status of ['error', 'cancelled'] as const) {
+      const r: RequestRow = { ...ROW, status, attemptFailures: [failedA] };
+      expect(toRouteTrace(r).map((n) => n.kind)).toEqual([
+        'source',
+        'decision',
+        'attempt',
+        'outcome',
+      ]);
+    }
+  });
+});
+
+/** dashboard-analytics "The escalation row states how and when the cheap leg ended". */
+describe('the escalation row states how and when the cheap leg ended (record-route-legs 7.2)', () => {
+  const escalation = (r: RequestRow): RouteTraceLegNode | undefined =>
+    toRouteTrace(r).find((n): n is RouteTraceLegNode => n.kind === 'leg' && n.leg === 'escalation');
+  const withCheap = (cheap: RouteLeg, over: Partial<RequestRow> = {}): RequestRow => ({
+    ...UNRECORDED_ESCALATION,
+    ...over,
+    routeLegs: [cheap, leg({ leg: 'escalation', end: 'served', endedMs: 38_000, servedIndex: 0 })],
+  });
+
+  it('a cheap deadline states the cause and the recorded time, never `30.0s`', () => {
+    const row = escalation(
+      withCheap(leg({ leg: 'cheap', end: 'deadline', endedMs: 30_020 }), { durationMs: 38_890 }),
+    );
+    expect(row).toMatchObject({ emphasis: 'neutral', detail: 'cheap deadline', at: '30.02s' });
+    expect(row?.text).toBe('escalation · cheap deadline · at 30.02s');
+    expect(row?.text).not.toContain('30.0s');
+  });
+
+  it.each([
+    [
+      'gate_failed',
+      { escalationSource: 'quality_gate' as const },
+      'escalation · quality gate · at 2.45s',
+    ],
+    ['exhausted', {}, 'escalation · cheap leg exhausted · at 2.45s'],
+    ['replay_failed', {}, 'escalation · cheap answer not delivered · at 2.45s'],
+    ['stopped', {}, 'escalation · cheap leg stopped · at 2.45s'],
+  ] as const)('a recorded `%s` cheap end reads its words', (end, over, text) => {
+    const r = withCheap(leg({ leg: 'cheap', end, endedMs: 2_450 }), over);
+    expect(escalation(r)?.text).toBe(text);
+    expect(traceTexts(r).join(' ')).not.toContain(CAUSE_CHEAP_DID_NOT_SERVE);
+    // A `cheap_error` row draws no `q=` anywhere (a `quality_gate` row's superseded node does).
+    if (r.escalationSource === 'cheap_error') expect(traceTexts(r).join(' ')).not.toContain('q=');
+  });
+
+  it('the time is the recorded `endedMs`, never the latency, the reason or another leg', () => {
+    const r = withCheap(leg({ leg: 'cheap', end: 'exhausted', endedMs: 2_450 }), {
+      durationMs: 9_999,
+      routingReason: 'cascade: escalated cheap→heavy after 5.00s (q=0.00)',
+    });
+    expect(escalation(r)?.at).toBe('2.45s');
+  });
+
+  it('without a cheap end that states a cause, the row keeps the recorded source, untimed', () => {
+    const untimed: RequestRow[] = [
+      UNRECORDED_ESCALATION,
+      { ...UNRECORDED_ESCALATION, routeLegs: [] },
+      withCheap(leg({ leg: 'cheap', end: 'cancelled', endedMs: 800 })),
+      withCheap(leg({ leg: 'cheap', end: 'served', endedMs: 800, servedIndex: 0 })),
+    ];
+    for (const r of untimed) {
+      expect(escalation(r)).toMatchObject({ detail: 'cheap leg did not serve', at: null });
+      expect(escalation(r)?.text).toBe('escalation · cheap leg did not serve');
+    }
+    expect(escalation({ ...UNRECORDED_ESCALATION, escalationSource: null })?.text).toBe(
+      'escalation',
+    );
+  });
+
+  it("a route record's quality-gate escalation keeps its superseded node and states the time", () => {
+    const r: RequestRow = {
+      ...UNRECORDED_ESCALATION,
+      escalationSource: 'quality_gate',
+      qualitySignal: 0.42,
+      attemptCostMicros: 3_100,
+      priceSource: 'bundled',
+      routeLegs: [
+        leg({ leg: 'cheap', end: 'gate_failed', endedMs: 2_450, servedIndex: 0 }),
+        leg({ leg: 'escalation', end: 'served', endedMs: 38_000, servedIndex: 0 }),
+      ],
+    };
+    expect(traceTexts(r)).toEqual([
+      'Lobechat',
+      'router · cascade',
+      'cheap leg',
+      'cheap attempt superseded · q=0.42 · $0.0031',
+      'escalation · quality gate · at 2.45s',
+      'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+    ]);
+    expect(supersededOf(toRouteTrace(r))?.text).not.toMatch(/cheap-|Groq/);
+  });
+});
+
+/** dashboard-analytics "The cheap leg row says when its attempts were not recorded". */
+describe('`attempts not recorded` only without a recorded cheap leg (record-route-legs 7.2)', () => {
+  it('a recorded cheap end with nothing attempted carries no note', () => {
+    const r: RequestRow = {
+      ...UNRECORDED_ESCALATION,
+      routeLegs: [
+        leg({ leg: 'cheap', end: 'deadline', endedMs: 30_000 }),
+        leg({ leg: 'escalation', end: 'served', endedMs: 38_000, servedIndex: 0 }),
+      ],
+    };
+    expect(traceTexts(r)).toEqual([
+      'Lobechat',
+      'router · cascade',
+      'cheap leg',
+      'escalation · cheap deadline · at 30.00s',
+      'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+    ]);
+    expect(traceTexts(r).join(' ')).not.toMatch(/Groq|Cheap|cheap-model/);
+  });
+
+  it('a cheap answer that was not delivered carries no note and draws no superseded node', () => {
+    const r: RequestRow = {
+      ...UNRECORDED_ESCALATION,
+      routeLegs: [
+        leg({ leg: 'cheap', end: 'replay_failed', endedMs: 2_450, servedIndex: 0 }),
+        leg({ leg: 'escalation', end: 'served', endedMs: 38_000, servedIndex: 0 }),
+      ],
+    };
+    expect(traceTexts(r).slice(2, 4)).toEqual([
+      'cheap leg',
+      'escalation · cheap answer not delivered · at 2.45s',
+    ]);
+    expect(supersededOf(toRouteTrace(r))).toBeUndefined();
+  });
+
+  it('a row whose record holds no cheap leg keeps the note', () => {
+    for (const routeLegs of [null, []])
+      expect(traceTexts({ ...UNRECORDED_ESCALATION, routeLegs })[2]).toBe(
+        'cheap leg · attempts not recorded',
+      );
+  });
+});
+
+/** dashboard-analytics "The route trace lights only a served outcome" (the outcome-naming rule). */
+describe('the outcome names what the route record proves (record-route-legs 7.2)', () => {
+  /** Two trail entries on the row's provider, so `unlitProvider` alone would name none. */
+  const trail = [entry({ index: 0, providerId: 'p1', model: 'gpt-a', status: 429 })];
+
+  it.each([
+    ['error', 'stopped', 'failed · 1.20s'],
+    ['error', 'deadline', 'failed · 1.20s'],
+    ['cancelled', 'cancelled', 'cancelled by client · 1.20s'],
+    ['throttled', 'stopped', 'throttled · 1.20s'],
+  ] as const)(
+    'a `%s` row whose final leg ended `%s` names no provider or model',
+    (status, end, text) => {
+      for (const sent of [true, false]) {
+        const r: RequestRow = {
+          ...ROW,
+          status,
+          routeLegs: [
+            leg({
+              leg: 'primary',
+              end,
+              stopped: {
+                index: 1,
+                model: 'gpt-b',
+                sent,
+                ...(end === 'stopped' ? { kind: 'policy_block' } : {}),
+              },
+            }),
+          ],
+        };
+        expect(outcomeOf(toRouteTrace(r))).toMatchObject({ provider: null, model: null, text });
+      }
+      // With no member being attempted (a cancel or a deadline between members), the same.
+      const between: RequestRow = { ...ROW, status, routeLegs: [leg({ leg: 'primary', end })] };
+      expect(outcomeOf(toRouteTrace(between)).text).toBe(text);
+    },
+  );
+
+  it('a failure or cancel after commit names the recorded provider and model', () => {
+    for (const [status, result] of [
+      ['error', 'failed'],
+      ['cancelled', 'cancelled by client'],
+    ] as const) {
+      const r: RequestRow = {
+        ...ROW,
+        status,
+        attemptFailures: trail,
+        routeLegs: [leg({ leg: 'primary', end: 'served', servedIndex: 1 })],
+      };
+      expect(outcomeOf(toRouteTrace(r))).toMatchObject({
+        emphasis: 'neutral',
+        provider: 'OpenAI',
+        model: 'GPT',
+        text: `OpenAI · GPT · ${result} · 1.20s`,
+      });
+      // The same row without its record names the model only (flag RF-1).
+      expect(outcomeOf(toRouteTrace({ ...r, routeLegs: null })).provider).toBeNull();
+    }
+  });
+
+  it('an exhausted final leg names exactly what the same row without a record names', () => {
+    const shapes: Partial<RequestRow>[] = [
+      {
+        status: 'error',
+        attemptFailures: [entry({ index: 0, providerId: 'p1', model: 'gpt-a', terminal: true })],
+      },
+      {
+        status: 'error',
+        attemptFailures: [entry({ index: 0, providerId: 'p9', model: 'gpt-a', terminal: true })],
+      },
+      {
+        status: 'error',
+        attemptFailures: [
+          entry({ index: 0, providerId: 'p1', model: 'gpt-a', dispatched: false, terminal: true }),
+        ],
+      },
+      { status: 'cancelled', attemptFailures: trail },
+      { status: 'throttled', attemptFailures: trail },
+    ];
+    for (const shape of shapes) {
+      const bare: RequestRow = { ...ROW, ...shape };
+      const recorded: RequestRow = {
+        ...bare,
+        routeLegs: [leg({ leg: 'primary', end: 'exhausted' })],
+      };
+      expect(outcomeOf(toRouteTrace(recorded))).toEqual(outcomeOf(toRouteTrace(bare)));
+    }
+    // The scenario's row: a terminal entry on the row's provider reads `<provider> · failed`.
+    expect(
+      outcomeOf(
+        toRouteTrace({
+          ...ROW,
+          ...shapes[0],
+          routeLegs: [leg({ leg: 'primary', end: 'exhausted' })],
+        }),
+      ).text,
+    ).toBe('OpenAI · failed · 1.20s');
+  });
+
+  it('a served row is lit as before, its record adding only a clamp', () => {
+    for (const status of ['success', 'fallback'] as const) {
+      const r: RequestRow = {
+        ...ROW,
+        status,
+        routeLegs: [leg({ leg: 'primary', end: 'served', servedIndex: 0 })],
+      };
+      expect(outcomeOf(toRouteTrace(r))).toEqual(
+        outcomeOf(toRouteTrace({ ...r, routeLegs: null })),
+      );
+    }
+  });
+});
+
+/** dashboard-analytics "The Decision section prints no quality signal on a cheap-leg escalation". */
+describe('the Decision section shows a replay-failed cheap answer’s signal (record-route-legs 7.2)', () => {
+  it('a passing cheap answer that was not delivered shows its signal; other cheap ends do not', () => {
+    const at = (end: RouteLeg['end']): RequestRow => ({
+      ...UNRECORDED_ESCALATION,
+      qualitySignal: 0.81,
+      routeLegs: [
+        leg({
+          leg: 'cheap',
+          end,
+          endedMs: 2_450,
+          ...(end === 'replay_failed' ? { servedIndex: 0 } : {}),
+        }),
+        leg({ leg: 'escalation', end: 'served', servedIndex: 0 }),
+      ],
+    });
+    const replayed = at('replay_failed');
+    expect(toInspectorView(replayed).qualitySignal).toBe(0.81);
+    // The trace still draws no `q=`, and its escalation row says what happened.
+    expect(traceTexts(replayed).join(' ')).not.toContain('q=');
+    expect(traceTexts(replayed)).toContain('escalation · cheap answer not delivered · at 2.45s');
+    for (const end of ['exhausted', 'deadline', 'stopped', 'cancelled'] as const)
+      expect(toInspectorView(at(end)).qualitySignal, end).toBeNull();
+    expect(
+      toInspectorView({ ...UNRECORDED_ESCALATION, qualitySignal: 0.81 }).qualitySignal,
+    ).toBeNull();
+  });
+});
+
+/** "Rows without `routeLegs` keep" every reading: the empty record is no record. The rendered
+ * proof against the code before this change is the golden in `routeTrace.view.test.tsx`. */
+describe('a row without a route record reads as before (record-route-legs 7.2)', () => {
+  it('an empty record and a null one build the same inspector view, over every fixture here', () => {
+    const fixtures: RequestRow[] = [
+      ROW,
+      CASCADE,
+      UNRECORDED_ESCALATION,
+      { ...ROW, status: 'fallback', attemptFailures: [entry({ model: 'a', status: 429 })] },
+      { ...ROW, status: 'error', attemptFailures: [entry({ model: 'a', terminal: true })] },
+      { ...ROW, status: 'cancelled' },
+      { ...CASCADE, status: 'error', attemptFailures: [entry({ model: 'c', leg: 'cheap' })] },
+      { ...UNRECORDED_ESCALATION, escalationSource: 'quality_gate', attemptCostMicros: 3_100 },
+    ];
+    for (const r of fixtures) {
+      const none = toInspectorView({ ...r, routeLegs: null });
+      expect(toInspectorView({ ...r, routeLegs: [] })).toEqual(none);
+      // No node a record would add, and no recorded time.
+      expect(none.trace.map((n) => n.kind)).not.toContain('deferral');
+      for (const n of none.trace) {
+        if (n.kind === 'leg') expect(n.at).toBeNull();
+        if (n.kind === 'attempt') {
+          expect(n.clamp).toBeNull();
+          expect(n.emphasis).not.toBe('in_flight');
+        }
+        if (n.kind === 'outcome') expect(n.clamp).toBeNull();
+      }
+    }
   });
 });

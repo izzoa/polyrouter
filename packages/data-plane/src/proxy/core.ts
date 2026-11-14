@@ -628,6 +628,31 @@ function planPauseFailure(index: number, kind: ProviderErrorKind): AttemptFailur
   };
 }
 
+/** How a chain walk that served nothing ended (record-route-legs design D3). A served
+ * walk carries no end — its result is `ok`/`stream`, and what happens after a stream
+ * commits is the row's status, never the walk's end.
+ * - `exhausted`: every member failed fallback-eligibly or was skipped (or the chain was
+ *   empty); `failures` holds each one.
+ * - `stopped`: a non-retryable failure that no abort explains stopped the walk at
+ *   `stopped.index`; the result's `error` is that member's own.
+ * - `deadline`: the walk's OWN deadline ended it (its signal fired with the caller still
+ *   present) — between members, before a reached member was sent, or by cutting off the
+ *   member in flight (which then carries RT-2's `stop: 'deadline'` entry).
+ * - `cancelled`: the client left before commit — between members, before a reached
+ *   member was sent, or while the member was in flight (which is never a failure entry:
+ *   it did not fail). */
+export type WalkEnd = 'exhausted' | 'stopped' | 'deadline' | 'cancelled';
+
+/** The member a walk was attempting when it ended `stopped`, `deadline` or `cancelled`
+ * (record-route-legs design D3): its position in the walk order — the index space of
+ * `AttemptFailure.index` — and whether it was handed to its adapter with the attempt's
+ * signal not yet fired (`sent`), the walker's own snapshot. Absent when the walk ended
+ * between members. */
+export interface WalkStopper {
+  readonly index: number;
+  readonly sent: boolean;
+}
+
 export type BufferedChainResult =
   | {
       readonly ok: true;
@@ -643,14 +668,21 @@ export type BufferedChainResult =
       /** The CALLER aborted (client gone) — captured deterministically at the point the
        * chain gave up, not re-derived from a mutable signal later. Lets the recorder
        * mark it `cancelled` (not a provider `error`) without racing a late disconnect
-       * that lands during breaker persistence after a genuine provider failure (A-3). */
+       * that lands during breaker persistence after a genuine provider failure (A-3).
+       * It and `ended` come from ONE caller read, so `ended: 'cancelled'` never rides
+       * a result that says the caller is still present (record-route-legs D3). */
       readonly callerAborted: boolean;
       /** Billing evidence for the attempt that ended the walk WITHOUT entering
-       * `failures` (zero-cost-unbilled-errors): a non-retryable stop carries that
-       * attempt's class; an empty chain and a loop-start abort (no member
-       * dispatched) carry `not_sent`. Absent after an exhausted walk of dispatched
-       * attempts — those are all in `failures`. */
+       * `failures` (zero-cost-unbilled-errors): a non-retryable stop and an in-flight
+       * cancel carry that attempt's class; an empty chain and a loop-start abort (no
+       * member dispatched) carry `not_sent`. Absent after an exhausted walk of
+       * dispatched attempts and after a deadline cut — those are all in `failures`. */
       readonly terminalBilling?: AttemptBilling;
+      /** How the walk ended (record-route-legs design D3). */
+      readonly ended: WalkEnd;
+      /** The member being attempted when the walk ended `stopped`, `deadline` or
+       * `cancelled`; absent when it ended between members, and on `exhausted`. */
+      readonly stopped?: WalkStopper;
     };
 
 export type StreamChainResult =
@@ -662,24 +694,106 @@ export type StreamChainResult =
       readonly callerAborted: boolean;
       /** See `BufferedChainResult.terminalBilling`. */
       readonly terminalBilling?: AttemptBilling;
+      /** See `BufferedChainResult.ended`. */
+      readonly ended: WalkEnd;
+      /** See `BufferedChainResult.stopped`. */
+      readonly stopped?: WalkStopper;
     }
   | (CommittedStream & {
       readonly servedIndex: number;
       readonly failures: readonly AttemptFailure[];
     });
 
+/** One attempt's state, captured by the walker INSIDE the breaker callback
+ * (record-route-legs design D3, after keep-cheap-leg-attempt-trail's `sent` /
+ * `abortedAtReject`). The breaker awaits its own settlement before rethrowing, so a
+ * deadline or a disconnect that lands during that await must not relabel an
+ * unrelated failure: the walker reads these, never the live signal, to decide a cut.
+ * Fresh per attempt; a callback that never rejected leaves the defaults, which
+ * decide nothing. */
+interface AttemptSnapshot {
+  /** The member was handed to its adapter with the attempt's signal not yet fired. */
+  sent: boolean;
+  /** The WALK's own signal had fired when the attempt's call rejected. */
+  walkAborted: boolean;
+  /** `isCallerAbort()` when the call rejected: `true` the client had left, `false` it
+   * was present, `undefined` no predicate (or no rejection observed). */
+  caller: boolean | undefined;
+}
+
+function freshSnapshot(): AttemptSnapshot {
+  return { sent: false, walkAborted: false, caller: undefined };
+}
+
+/** Record, at the instant the attempt's call rejected, whether the walk's signal had
+ * fired and whether the caller had left. */
+function snapshotRejection(
+  snap: AttemptSnapshot,
+  walkSignal: AbortSignal | undefined,
+  isCallerAbort: (() => boolean) | undefined,
+): void {
+  snap.walkAborted = walkSignal?.aborted === true;
+  snap.caller = isCallerAbort?.();
+}
+
+/** Whether an abort cut this attempt off in flight (record-route-legs design D3): it
+ * was sent, and it ended without a provider answer (`uncertain`: a status means the
+ * provider answered first, `not_sent` is a local refusal). A non-retryable error
+ * qualifies only as the cancellation the abort raised before response headers — a
+ * `policy_block` or `oversized_response` is a real failure whatever followed — while
+ * after headers the adapter already turned the abort into a retryable `unavailable`.
+ * - `cancelled`: the caller had left at rejection — never `deadline`, even when the
+ *   walk's own deadline had also fired.
+ * - `deadline`: the walk's signal had fired with the caller present at rejection
+ *   (strictly `false`: a walk without the predicate never marks one). */
+function inFlightCut(
+  snap: AttemptSnapshot,
+  billing: AttemptBilling,
+  rawErr: unknown,
+  eligible: boolean,
+): 'cancelled' | 'deadline' | null {
+  if (!snap.sent || billing !== 'uncertain') return null;
+  if (!eligible && !isCancellation(rawErr)) return null;
+  if (snap.caller === true) return 'cancelled';
+  if (snap.walkAborted && snap.caller === false) return 'deadline';
+  return null;
+}
+
+/** The end of a walk that an abort found at its next member's start — before that
+ * member was reached — from the one caller read the return takes. */
+function loopStartEnd(caller: boolean | undefined): WalkEnd {
+  return caller === false ? 'deadline' : 'cancelled';
+}
+
+/** The end of a walk a non-retryable error stopped, once no in-flight cut applied: a
+ * cancellation ends `cancelled` when the caller aborted, `deadline` when the walk's
+ * signal had fired with the caller present (an abort that beat the member's dispatch),
+ * and otherwise — a stray cancellation, or any other non-retryable kind — `stopped`.
+ * `caller` is the return's one read. */
+function nonRetryableEnd(
+  rawErr: unknown,
+  snap: AttemptSnapshot,
+  caller: boolean | undefined,
+): WalkEnd {
+  if (!isCancellation(rawErr)) return 'stopped';
+  if (caller === true) return 'cancelled';
+  if (snap.walkAborted && caller === false) return 'deadline';
+  return 'stopped';
+}
+
 /** A cancelled call: the adapter's `CallCancelledError`, or a raw `AbortError`. */
 function isCancellation(err: unknown): boolean {
   return err instanceof CallCancelledError || (err instanceof Error && err.name === 'AbortError');
 }
 
-/** Decide on the RAW error whether to walk to the next member. A client
- * cancellation (gone) stops, as do the taxonomy's TWO non-retryable kinds — a
- * `bad_request` (the caller's fault; every member would reject it identically) and
- * a `policy_block` (a 451 legal denial another member might well serve, which is
- * exactly why we must not try). A circuit-open skip, a member build failure, and a
- * retryable ProviderError continue. "Non-retryable" is NOT a synonym for "the
- * caller's fault" (fix-4xx-error-taxonomy). */
+/** Decide on the RAW error whether to walk to the next member. A cancellation stops,
+ * as do the taxonomy's TWO non-retryable kinds (`shouldFallback`) — a `policy_block`
+ * (a 451 legal denial another member might well serve, which is exactly why we must
+ * not try) and an `oversized_response` (walking would drain a second over-cap body).
+ * A `bad_request` is RETRYABLE (fix-bad-request-dead-end): a router-chosen member's
+ * 400 describes that model, not the caller's request. A circuit-open skip and a
+ * retryable ProviderError continue; an unrecognised throw stops. "Non-retryable" is
+ * NOT a synonym for "the caller's fault" (fix-4xx-error-taxonomy). */
 export function fallbackEligible(err: unknown): boolean {
   if (isCancellation(err)) return false;
   if (err instanceof ProviderCircuitOpenError) return true;
@@ -706,19 +820,23 @@ export async function runBufferedChain(
   const failures: AttemptFailure[] = [];
   let lastError: ProviderError = new ProviderError('unavailable', 'no chain members');
   for (let i = 0; i < attempts.length; i += 1) {
-    if (signal.aborted)
+    if (signal.aborted) {
       // The loop-STOP is on the composite signal (a cheap-tier DEADLINE must halt the
       // chain too), but `callerAborted` is only true for a real CLIENT abort — the pure
       // predicate. A deadline abort stays escalation-eligible, not `cancelled` (A-3).
+      // ONE read decides both the flag and the end (record-route-legs design D3).
+      const caller = ctx.isCallerAbort?.();
       return {
         ok: false,
         error: new ProviderError('unavailable', 'cancelled'),
         failures,
-        callerAborted: ctx.isCallerAbort?.() === true,
+        callerAborted: caller === true,
         // The abort landed BEFORE the next member was dispatched: nothing in flight
-        // for this stop (zero-cost-unbilled-errors).
+        // for this stop (zero-cost-unbilled-errors), and no member to name.
         terminalBilling: 'not_sent',
+        ended: loopStartEnd(caller),
       };
+    }
     const attempt = attempts[i]!;
     const req = attemptRequest(request, attempt);
     // Plan cooldown (classify-plan-quota-errors): read BEFORE the try and before
@@ -733,13 +851,13 @@ export async function runBufferedChain(
         continue;
       }
     }
-    // keep-cheap-leg-attempt-trail (design D3): whether THIS member was handed to its
-    // adapter, and whether the walk's signal had fired when that call rejected. Both
-    // are captured inside the breaker callback: `withBreaker` awaits its own
-    // settlement before rethrowing, and a deadline that fires during that await must
-    // not relabel an unrelated failure as a deadline cut.
-    let sent = false;
-    let abortedAtReject = false;
+    // keep-cheap-leg-attempt-trail + record-route-legs (design D3): whether THIS member
+    // was handed to its adapter, and — when its call rejected — whether the walk's
+    // signal had fired and whether the caller had left. All are captured inside the
+    // breaker callback: `withBreaker` awaits its own settlement before rethrowing, and
+    // a deadline or a disconnect during that await must not relabel an unrelated
+    // failure as a cut.
+    const snap = freshSnapshot();
     try {
       // build INSIDE the breaker callback: an open circuit skips before setup,
       // and a probe admission widens the adapter bounds (probe patience). The
@@ -749,18 +867,18 @@ export async function runBufferedChain(
         breaker,
         attempt.providerId,
         async (admission) => {
-          const adapter = await attempt.buildAdapter(admission);
-          // A signal that fired during admission or build means the member was never
-          // sent: the adapter's own entry check throws before any request leaves.
-          sent = !signal.aborted;
           try {
+            const adapter = await attempt.buildAdapter(admission);
+            // A signal that fired during admission or build means the member was never
+            // sent: the adapter's own entry check throws before any request leaves.
+            snap.sent = !signal.aborted;
             return await adapter.chat(req, {
               signal,
               onBytes: admission.renewOnActivity,
               ...(attempt.onPlanUsage !== undefined ? { onPlanUsage: attempt.onPlanUsage } : {}),
             });
           } catch (callErr) {
-            abortedAtReject = signal.aborted;
+            snapshotRejection(snap, signal, ctx.isCallerAbort);
             throw callErr;
           }
         },
@@ -788,38 +906,64 @@ export async function runBufferedChain(
       // it rides the result as `terminalBilling`.
       const billing = attemptBilling(err, mapped);
       if (attempt.planCooldown) await breaker.recordPlanCooldown(attempt.providerId, mapped);
-      // keep-cheap-leg-attempt-trail (design D3): the walk's OWN deadline cut this
-      // member off. Only a walk whose signal is not the caller's alone can say so —
-      // `isCallerAbort` strictly false (a walk without the predicate never marks) —
-      // and only for an in-flight call the abort ended (`uncertain`: a status means
-      // the provider answered first; `not_sent` is a local refusal).
-      const deadlineCut =
-        sent && abortedAtReject && billing === 'uncertain' && ctx.isCallerAbort?.() === false;
-      if (!fallbackEligible(err)) {
-        // A cut BEFORE response headers surfaces as a cancellation, which never walks
-        // on. It enters the trail as the attempt it was, so its billing class rides
-        // the entry and the result carries no `terminalBilling` (design D8). Any other
-        // non-retryable stop keeps its terminal handling.
-        if (deadlineCut && isCancellation(err)) {
-          failures.push({ index: i, error: mapped, dispatched: true, billing, stop: 'deadline' });
-          return { ok: false, error: mapped, failures, callerAborted: false };
-        }
+      const eligible = fallbackEligible(err);
+      // record-route-legs (design D3): a member the walk's deadline or the client's
+      // cancel cut off in flight — before response headers (a cancellation) or after
+      // them (the adapter's retryable `unavailable`) — ends the walk AT ONCE; the next
+      // loop start would have stopped it anyway, so no routing moves.
+      const cut = inFlightCut(snap, billing, err, eligible);
+      if (cut === 'deadline') {
+        // keep-cheap-leg-attempt-trail (design D3/D8): the walk's OWN deadline cut it.
+        // It enters the trail as the attempt it was, so its billing class rides the
+        // entry and the result carries no `terminalBilling`.
+        failures.push({ index: i, error: mapped, dispatched: true, billing, stop: 'deadline' });
         return {
           ok: false,
           error: mapped,
           failures,
-          callerAborted: ctx.isCallerAbort?.() === true,
-          terminalBilling: billing,
+          callerAborted: false,
+          ended: 'deadline',
+          stopped: { index: i, sent: true },
         };
       }
+      if (cut === 'cancelled') {
+        // The client left while it was in flight: it did not fail, so it is never a
+        // trail entry; its billing class rides `terminalBilling`.
+        return {
+          ok: false,
+          error: mapped,
+          failures,
+          callerAborted: true,
+          terminalBilling: billing,
+          ended: 'cancelled',
+          stopped: { index: i, sent: true },
+        };
+      }
+      if (!eligible) {
+        // A non-retryable stop keeps its terminal handling; ONE caller state decides the
+        // flag and the end — the one seen when the call REJECTED (record-route-legs, codex
+        // review): a client that leaves while the breaker settles a genuine
+        // `policy_block` must not turn it into a cancel, which is A-3's own intent. Only
+        // a rejection the callback never observed falls back to a read now.
+        const caller = snap.caller ?? ctx.isCallerAbort?.();
+        return {
+          ok: false,
+          error: mapped,
+          failures,
+          callerAborted: caller === true,
+          terminalBilling: billing,
+          ended: nonRetryableEnd(err, snap, caller),
+          stopped: { index: i, sent: snap.sent },
+        };
+      }
+      // A real failure — including one that carried an upstream status, or a local
+      // refusal, as an abort followed: it is pushed, and the walk ends at the next
+      // loop start (or through the exhaustion return on the last member).
       failures.push({
         index: i,
         error: mapped,
         dispatched: !(err instanceof ProviderCircuitOpenError),
         billing,
-        // A cut AFTER headers (an aborted body drain or SSE read) is already a
-        // retryable `unavailable`; the marker says the walk, not the provider, ended it.
-        ...(deadlineCut ? { stop: 'deadline' as const } : {}),
       });
       lastError = mapped;
     }
@@ -832,6 +976,7 @@ export async function runBufferedChain(
     // An empty chain dispatched nothing; a walk that ran members has every
     // attempt in `failures` already.
     ...(attempts.length === 0 ? { terminalBilling: 'not_sent' as const } : {}),
+    ended: 'exhausted',
   };
 }
 
@@ -848,17 +993,21 @@ export async function openStreamChain(
   const failures: AttemptFailure[] = [];
   let lastError: ProviderError = new ProviderError('unavailable', 'no chain members');
   for (let i = 0; i < attempts.length; i += 1) {
-    if (opts.signal?.aborted)
+    if (opts.signal?.aborted) {
       // Stop on the composite signal, but flag `callerAborted` only for a real client
       // abort (pure predicate) — a cheap-tier deadline stays escalation-eligible (A-3).
+      // ONE read decides both the flag and the end (record-route-legs design D3).
+      const caller = opts.isCallerAbort?.();
       return {
         kind: 'error',
         error: new ProviderError('unavailable', 'cancelled'),
         failures,
-        callerAborted: opts.isCallerAbort?.() === true,
+        callerAborted: caller === true,
         // Before the next member was dispatched (zero-cost-unbilled-errors).
         terminalBilling: 'not_sent',
+        ended: loopStartEnd(caller),
       };
+    }
     const attempt = attempts[i]!;
     const req = attemptRequest(request, attempt);
     // Plan cooldown: same pre-admission skip as the buffered walker.
@@ -877,6 +1026,9 @@ export async function openStreamChain(
     // before any upstream byte — so the fired-at-stale-value timer re-arms for
     // the remainder instead of aborting.
     const bound = { ms: attempt.firstEventTimeoutMs ?? opts.firstEventTimeoutMs };
+    // record-route-legs (design D3): the buffered walker's snapshot, taken inside the
+    // breaker generator — `withBreakerStream` awaits its settlement before rethrowing.
+    const snap = freshSnapshot();
     const result = await openAttemptStream(
       (signal, onBytes) =>
         withBreakerStream(
@@ -898,6 +1050,10 @@ export async function openStreamChain(
                 renewOnActivity();
               },
               admission,
+              snap,
+              // The WALK's signal, not the attempt's: the attempt's also fires on the
+              // first-event watchdog, a provider timeout that is never a deadline cut.
+              () => snapshotRejection(snap, opts.signal, opts.isCallerAbort),
             );
           },
           opts.onOpen,
@@ -923,16 +1079,48 @@ export async function openStreamChain(
     // unbilled-errors) — see the buffered walker.
     const billing = attemptBilling(result.error, mapped);
     if (attempt.planCooldown) await breaker.recordPlanCooldown(attempt.providerId, mapped);
-    // Pre-commit failure: a caller abort is `unavailable` after adapter normalization,
-    // so consult the pure client signal at the failure boundary (A-3).
-    if (!fallbackEligible(result.error))
+    const eligible = fallbackEligible(result.error);
+    // record-route-legs (design D3): the buffered walker's in-flight cut rules — a
+    // deadline cut is pushed with its marker and ends the walk; an in-flight cancel is
+    // not a failure and ends it too; both before the first event, so pre-commit.
+    const cut = inFlightCut(snap, billing, result.error, eligible);
+    if (cut === 'deadline') {
+      failures.push({ index: i, error: mapped, dispatched: true, billing, stop: 'deadline' });
       return {
         kind: 'error',
         error: mapped,
         failures,
-        callerAborted: opts.isCallerAbort?.() === true,
-        terminalBilling: billing,
+        callerAborted: false,
+        ended: 'deadline',
+        stopped: { index: i, sent: true },
       };
+    }
+    if (cut === 'cancelled') {
+      return {
+        kind: 'error',
+        error: mapped,
+        failures,
+        callerAborted: true,
+        terminalBilling: billing,
+        ended: 'cancelled',
+        stopped: { index: i, sent: true },
+      };
+    }
+    // Pre-commit failure: a caller abort is `unavailable` after adapter normalization,
+    // so consult the pure client signal at the failure boundary (A-3) — once.
+    if (!eligible) {
+      // The caller state seen at rejection, as the buffered walker (record-route-legs).
+      const caller = snap.caller ?? opts.isCallerAbort?.();
+      return {
+        kind: 'error',
+        error: mapped,
+        failures,
+        callerAborted: caller === true,
+        terminalBilling: billing,
+        ended: nonRetryableEnd(result.error, snap, caller),
+        stopped: { index: i, sent: snap.sent },
+      };
+    }
     failures.push({
       index: i,
       error: mapped,
@@ -947,22 +1135,35 @@ export async function openStreamChain(
     failures,
     callerAborted: opts.isCallerAbort?.() === true,
     ...(attempts.length === 0 ? { terminalBilling: 'not_sent' as const } : {}),
+    ended: 'exhausted',
   };
 }
 
 /** Build the adapter (inside the breaker generator, after admission — so a
- * probe admission widens its bounds) then stream. */
+ * probe admission widens its bounds) then stream. Records the attempt's `sent`
+ * snapshot immediately before the stream call, from the ATTEMPT's signal (the walk's,
+ * or its first-event watchdog), and calls `onReject` the instant the build or the
+ * stream rejects — before `withBreakerStream` settles (record-route-legs design D3).
+ * It only reads flags: no event is forwarded earlier or later (invariant 3). */
 async function* buildThenStream(
   attempt: ChainAttempt,
   request: NormalizedRequest,
   signal: AbortSignal,
   onBytes: () => void,
-  admission?: BreakerAdmission,
+  admission: BreakerAdmission | undefined,
+  snap: AttemptSnapshot,
+  onReject: () => void,
 ): AsyncGenerator<NormalizedStreamEvent> {
-  const adapter = await attempt.buildAdapter(admission);
-  yield* adapter.chatStream(request, {
-    signal,
-    onBytes,
-    ...(attempt.onPlanUsage !== undefined ? { onPlanUsage: attempt.onPlanUsage } : {}),
-  });
+  try {
+    const adapter = await attempt.buildAdapter(admission);
+    snap.sent = !signal.aborted;
+    yield* adapter.chatStream(request, {
+      signal,
+      onBytes,
+      ...(attempt.onPlanUsage !== undefined ? { onPlanUsage: attempt.onPlanUsage } : {}),
+    });
+  } catch (err) {
+    onReject();
+    throw err;
+  }
 }

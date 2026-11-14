@@ -21,7 +21,7 @@ describe('planOutputCaps — two-stage deferral (add-output-cap-guardrails)', ()
     expect(order(plan)).toEqual(['B', 'A']);
     expect(plan.members[0]!.clampTo).toBeUndefined();
     expect(plan.members[1]!.clampTo).toBe(16_384);
-    expect(plan.deferred).toEqual([{ label: 'A', cap: 16_384 }]);
+    expect(plan.deferred).toEqual([{ index: 1, label: 'A', cap: 16_384 }]);
   });
 
   it('an empty head walks the tail in CONFIGURED order, each clamped to its OWN cap, no deferrals', () => {
@@ -35,7 +35,7 @@ describe('planOutputCaps — two-stage deferral (add-output-cap-guardrails)', ()
     const plan = planOutputCaps([m('EQ', 100_000), m('U', null), m('LOW', 99_999)], 100_000);
     expect(order(plan)).toEqual(['EQ', 'U', 'LOW']);
     expect(plan.members[2]!.clampTo).toBe(99_999);
-    expect(plan.deferred).toEqual([{ label: 'LOW', cap: 99_999 }]);
+    expect(plan.deferred).toEqual([{ index: 2, label: 'LOW', cap: 99_999 }]);
   });
 
   it('preserves configured relative order WITHIN each stage', () => {

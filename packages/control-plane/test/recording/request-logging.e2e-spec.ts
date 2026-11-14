@@ -94,6 +94,14 @@ const stubAdapterFactory: typeof createProviderAdapter = (config, deps) => {
 };
 const PLAIN_KEY = 'sk-keypreset-e2e';
 
+/** record-route-legs D4: a leg's `endedMs` is a non-negative integer of ms from the
+ * request's start, read before `duration_ms` from the same origin, so it never exceeds it. */
+function expectEndedWithin(endedMs: number, durationMs: number): void {
+  expect(Number.isInteger(endedMs)).toBe(true);
+  expect(endedMs).toBeGreaterThanOrEqual(0);
+  expect(endedMs).toBeLessThanOrEqual(durationMs);
+}
+
 describe('request-logging e2e', () => {
   let app: INestApplication;
   let server: App;
@@ -325,6 +333,13 @@ describe('request-logging e2e', () => {
     });
     expect(row.inputTokens).toBeGreaterThan(0);
     expect(row.durationMs).toBeGreaterThanOrEqual(0);
+    // record-route-legs: one served primary leg, and nothing else — a client-named model
+    // is never deferred or clamped, and nothing stopped the walk. The whole-row guard
+    // below runs over the route record too (no key or enum value carries `hi`).
+    expect(row.routeLegs).toEqual([
+      { leg: 'primary', end: 'served', servedIndex: 0, endedMs: expect.any(Number) as number },
+    ]);
+    expectEndedWithin(row.routeLegs![0]!.endedMs, row.durationMs);
     expect(JSON.stringify(row)).not.toContain('hi'); // no prompt/response body
     expect(row.attemptFailures).toBeNull(); // add-fallback-attempt-detail: success rows carry none
     expect(row.billed).toBe(true); // zero-cost-unbilled-errors: a served row is always billed
@@ -1164,6 +1179,37 @@ describe('request-logging e2e', () => {
         expect(row.status).toBe('error');
         expectNotBilled(row);
         expect(row.errorKind).toBe('policy_block');
+        // record-route-legs: the route record names the member that stopped the walk
+        // (index 1, sent, its kind and status), while the row's provider and model columns
+        // still name the leg's member 0 — the price snapshot and the not-billed verdict
+        // above are taken from them exactly as before (design D8).
+        expect(row.routeLegs).toEqual([
+          {
+            leg: 'primary',
+            end: 'stopped',
+            endedMs: expect.any(Number) as number,
+            stopped: {
+              index: 1,
+              model: 'oai-zc-legal',
+              sent: true,
+              kind: 'policy_block',
+              status: 451,
+            },
+          },
+        ]);
+        expectEndedWithin(row.routeLegs![0]!.endedMs, row.durationMs);
+        expect(row.modelId).toBe(limited.modelId);
+        expect(row.providerId).toBe(limited.providerId);
+        // A non-retryable stop's terminal error never enters the trail: member 0 alone.
+        expect(row.attemptFailures).toHaveLength(1);
+        expect(row.attemptFailures![0]).toMatchObject({
+          index: 0,
+          model: 'oai-zc-ratelimit-451',
+          kind: 'rate_limit',
+          status: 429,
+          dispatched: true,
+        });
+        expect(row.attemptFailures![0]).not.toHaveProperty('terminal');
       },
     );
 
@@ -1256,6 +1302,97 @@ describe('request-logging e2e', () => {
         const row = await rowOf(tierKey);
         expect(row.status).toBe('cancelled');
         expectNotBilled(row);
+        // record-route-legs: the cancel landed before the walk reached any member, so the
+        // leg ends `cancelled` naming none, and there is no trail to keep.
+        expect(row.routeLegs).toEqual([
+          { leg: 'primary', end: 'cancelled', endedMs: expect.any(Number) as number },
+        ]);
+        expect(row.attemptFailures).toBeNull();
+      },
+    );
+
+    // record-route-legs (request-logging "A cancelled row keeps the walk it ran before the
+    // client left"; fallback-routing "A client cancel names the member in flight"): the
+    // client leaves while member 1 is in flight, before (`hang`) or after (`stallhdr`) its
+    // response headers, on both walkers. Member 0's 429 is kept in the trail; member 1 did
+    // not fail, so it has no entry and the reason's trail does not list it — the route
+    // record's `stopped` names it instead.
+    it.each([
+      { mode: 'completion', stall: 'hang' },
+      { mode: 'completion', stall: 'stallhdr' },
+      { mode: 'stream', stall: 'hang' },
+      { mode: 'stream', stall: 'stallhdr' },
+    ] as const)(
+      'a client cancel while member 1 is in flight ($mode, $stall) keeps the trail before it and names the member in flight',
+      async ({ mode, stall }) => {
+        const limited = await member('oai-zc-ratelimit-cx');
+        const target = `oai-zc-cx-${stall}`;
+        const inFlight = await member(target);
+        const tierKey = await tierOf([limited, inFlight]);
+        const before = stub.requests.length;
+        const gone = new AbortController();
+        const svc = app.get(ProxyService);
+        const wire = { model: tierKey, messages: [{ role: 'user', content: PROMPT }] };
+        const call =
+          mode === 'completion'
+            ? svc.completion(principal, 'openai', wire, {}, null, gone.signal)
+            : svc.stream(principal, 'openai', wire, {}, gone.signal, null);
+        const settled = call.then(
+          () => 'resolved',
+          () => 'rejected',
+        );
+        // Leave only once member 1 is on the wire — and, after headers, once its headers
+        // are too (well inside the suite's 1.5s first-byte bound).
+        const deadline = Date.now() + 5_000;
+        for (;;) {
+          const sent = stub.requests
+            .slice(before)
+            .find((r) => (r.body as { model?: string } | undefined)?.model === target);
+          if (sent !== undefined && (stall === 'hang' || sent.headersFlushed === true)) break;
+          if (Date.now() > deadline) throw new Error(`${target} never reached the stub`);
+          await new Promise((r) => setTimeout(r, 5));
+        }
+        if (stall === 'stallhdr') await new Promise((r) => setTimeout(r, 50)); // headers land
+        gone.abort();
+        expect(await settled).toBe('rejected');
+        expect(stub.requests.length - before).toBe(2); // member 0, then member 1 in flight
+
+        const row = await rowOf(tierKey);
+        expect(row.status).toBe('cancelled');
+        // The walk before the client left: member 0's 429, and nothing for member 1.
+        expect(row.attemptFailures).toHaveLength(1);
+        expect(row.attemptFailures![0]).toMatchObject({
+          index: 0,
+          providerId: limited.providerId,
+          model: 'oai-zc-ratelimit-cx',
+          kind: 'rate_limit',
+          status: 429,
+          dispatched: true,
+        });
+        expect(row.attemptFailures![0]).not.toHaveProperty('terminal');
+        expect(row.attemptFailures![0]).not.toHaveProperty('stopReason');
+        expect(row.routingReason).not.toContain(`@${target}`);
+        // The member in flight, named by the route record — no kind, no status.
+        expect(row.routeLegs).toEqual([
+          {
+            leg: 'primary',
+            end: 'cancelled',
+            endedMs: expect.any(Number) as number,
+            stopped: { index: 1, model: target, sent: true },
+          },
+        ]);
+        expectEndedWithin(row.routeLegs![0]!.endedMs, row.durationMs);
+        // Keeping the trail moves nothing else: no terminal error detail, member 0 in the
+        // provider and model columns, and billed — an attempt was in flight (uncertain).
+        expect([
+          row.errorKind,
+          row.errorStatus,
+          row.errorMessage,
+          row.errorRequestId,
+          row.errorMarkers,
+        ]).toEqual([null, null, null, null, null]);
+        expect(row.modelId).toBe(limited.modelId);
+        expectBilledEstimate(row);
       },
     );
 
@@ -1267,6 +1404,10 @@ describe('request-logging e2e', () => {
       const row = await rowOf(tierKey);
       expect(row.status).toBe('error');
       expectBilledEstimate(row);
+      // record-route-legs: a leg's end is not the row's status — the committed member served.
+      expect(row.routeLegs).toEqual([
+        { leg: 'primary', end: 'served', servedIndex: 0, endedMs: expect.any(Number) as number },
+      ]);
     });
 
     it('a client cancel AFTER the first token stays billed', async () => {
@@ -1294,6 +1435,11 @@ describe('request-logging e2e', () => {
       const row = await rowOf(tierKey);
       expect(row.status).toBe('cancelled');
       expectBilledEstimate(row);
+      // record-route-legs: a cancel after commit leaves the leg `served`, naming no stopper.
+      expect(row.routeLegs).toEqual([
+        { leg: 'primary', end: 'served', servedIndex: 0, endedMs: expect.any(Number) as number },
+      ]);
+      expectEndedWithin(row.routeLegs![0]!.endedMs, row.durationMs);
     });
 
     it('a not-billed row is immutable: a later catalog price change leaves $0 and its snapshot', async () => {
@@ -1350,6 +1496,8 @@ describe('request-logging e2e', () => {
         outputPriceSnapshot: 6,
       });
       expect(recorded.inputTokens).toBeGreaterThan(0);
+      // record-route-legs: a context no chain walk built carries no route record.
+      expect(recorded.routeLegs).toBeNull();
 
       await pricing.override(modelKey, { inputPricePer1m: 999, outputPricePer1m: 999 }, new Date());
       const again = await port.requestLogs.findById(principal, recorded.id);

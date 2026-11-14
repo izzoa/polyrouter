@@ -1,4 +1,4 @@
-import type { AttemptFailureEntry, HarnessType, RuleMatchType } from '@polyrouter/shared';
+import type { AttemptFailureEntry, HarnessType, RouteLeg, RuleMatchType } from '@polyrouter/shared';
 import { API_BASE, PROXY_BASE } from './catalog';
 import { validBudgetProgressIds, type BudgetProgressResponse } from '@polyrouter/shared';
 
@@ -476,7 +476,13 @@ export interface UpdateTierInput {
  * root (add-band-target-ui) — the client-side mirror is gone: one source of
  * truth for the cap, the header, and the rule kinds. */
 export { MAX_MODELS_PER_TIER, TIER_HEADER_NAME } from '@polyrouter/shared';
-export type { AttemptFailureEntry, RuleMatchType } from '@polyrouter/shared';
+export type {
+  AttemptFailureEntry,
+  RouteDeferral,
+  RouteLeg,
+  RouteStopper,
+  RuleMatchType,
+} from '@polyrouter/shared';
 
 export interface RuleDto {
   id: string;
@@ -952,8 +958,17 @@ export interface RequestRow {
    * walked failure/skip trail, verbatim from the stored column. Present on
    * `error` AND `fallback` rows (fix-bad-request-dead-end: the trail follows the
    * WALK, not the terminal status — a RECOVERED request's trail is the only record
-   * of why the chain moved); null for `success`/`cancelled` and legacy rows. */
+   * of why the chain moved), on `cancelled` rows and on an escalated `success`
+   * (record-route-legs design D6); null for any other `success` and for legacy rows
+   * (a `cancelled` row recorded before record-route-legs kept none). */
   attemptFailures: AttemptFailureEntry[] | null;
+  /** The route record (record-route-legs): one entry per executed leg of the chain walk, in
+   * execution order (`[primary]`, `[cheap]` or `[cheap, escalation]`), verbatim from
+   * `request_log.route_legs`. It states how and when each leg ended, the member that stopped a
+   * walk, and the leg's deferrals and clamps. Null on a row no proxy walk settled (a batch item)
+   * and on every row recorded before the column; the route trace then draws what it drew
+   * before. */
+  routeLegs: RouteLeg[] | null;
   /** add-body-capture: this request has stored bodies (content NEVER rides the
    * listing — the inspector fetches lazily via `requestBodies`). */
   hasBodies: boolean;

@@ -865,6 +865,163 @@ if (params.get('trace') === 'cascade') {
         },
       ],
     },
+    // record-route-legs (task 7.4): three rows that carry a route record, listed after the
+    // deadline row so the four rows above keep their places. Their model ids are realistic, so
+    // the layout suite holds each new row (a deferral, a clamped or stopping member, an escalation
+    // row with its time) to at most two lines of the 320px sheet.
+    //
+    // The fifth row: an escalation whose cheap leg the cheap deadline ended at 30.02s, with a
+    // deferral on each leg, the cut cheap call clamped, and the served member clamped too.
+    {
+      ...head,
+      id: 'trace-cascade-deferral',
+      createdAt: new Date(Date.parse(head.createdAt) + 3000).toISOString(),
+      agentLabel: 'Lobechat',
+      providerLabel: 'XiaomiMiMo',
+      status: 'success',
+      decisionLayer: 'cascade',
+      // A short reason: this row measures the trace. (A real reason's capacity note, such as
+      // `cheap[output_cap_deferred gemma2-9b-it(8192<100000)]`, is one unbroken run the Decision
+      // section's reason row does not wrap at 320px: a separate, pre-existing layout gap.)
+      routingReason: 'cascade: escalated cheap→heavy (q=0.00)',
+      tierAssigned: 'heavy',
+      escalated: true,
+      escalationSource: 'cheap_error',
+      qualitySignal: 0,
+      attemptCostMicros: 0,
+      durationMs: 38_890,
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'prov-0',
+          model: 'llama-3.1-8b-instant',
+          kind: 'unavailable',
+          dispatched: true,
+          leg: 'cheap',
+          stopReason: 'deadline',
+        },
+      ],
+      routeLegs: [
+        {
+          leg: 'cheap',
+          end: 'deadline',
+          endedMs: 30_020,
+          ask: 100_000,
+          stopped: { index: 0, model: 'llama-3.1-8b-instant', sent: true },
+          deferred: [
+            { index: 1, model: 'gemma2-9b-it', reason: 'capability', capabilities: ['tools'] },
+            { index: 1, model: 'gemma2-9b-it', reason: 'output_cap', cap: 8_192 },
+          ],
+          clamps: [{ index: 0, model: 'llama-3.1-8b-instant', to: 4_096 }],
+        },
+        {
+          leg: 'escalation',
+          end: 'served',
+          endedMs: 38_100,
+          servedIndex: 0,
+          ask: 100_000,
+          deferred: [
+            { index: 1, model: 'gpt-4o-mini', reason: 'capability', capabilities: ['vision'] },
+          ],
+          clamps: [{ index: 0, model: LONG_MODEL, to: 16_384 }],
+        },
+      ],
+    },
+    // The sixth row: a cascade request whose cheap leg a non-retryable `policy_block` stopped at
+    // its second member, so the outcome names no provider or model.
+    {
+      ...head,
+      id: 'trace-cascade-stopped',
+      createdAt: new Date(Date.parse(head.createdAt) + 2000).toISOString(),
+      agentLabel: 'Lobechat',
+      status: 'error',
+      decisionLayer: 'cascade',
+      routingReason: 'cascade: cheap stopped (policy_block@claude-3-5-haiku-latest)',
+      tierAssigned: 'default',
+      escalated: false,
+      escalationSource: null,
+      qualitySignal: null,
+      attemptCostMicros: 0,
+      durationMs: 1_900,
+      errorKind: 'policy_block',
+      errorStatus: 451,
+      errorMessage: 'The request was blocked by the provider’s content policy.',
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'prov-0',
+          model: 'llama-3.1-8b-instant',
+          kind: 'rate_limit',
+          status: 429,
+          dispatched: true,
+          leg: 'cheap',
+        },
+      ],
+      routeLegs: [
+        {
+          leg: 'cheap',
+          end: 'stopped',
+          endedMs: 1_840,
+          stopped: {
+            index: 1,
+            model: 'claude-3-5-haiku-latest',
+            sent: true,
+            kind: 'policy_block',
+            status: 451,
+          },
+        },
+      ],
+    },
+    // The seventh row: an escalation the client left while its clamped member was in flight.
+    {
+      ...head,
+      id: 'trace-cascade-in-flight',
+      createdAt: new Date(Date.parse(head.createdAt) + 1000).toISOString(),
+      agentLabel: 'Lobechat',
+      status: 'cancelled',
+      decisionLayer: 'cascade',
+      routingReason: 'cascade: escalated cheap→heavy (q=0.00)',
+      tierAssigned: 'heavy',
+      escalated: true,
+      escalationSource: 'cheap_error',
+      qualitySignal: 0,
+      attemptCostMicros: 0,
+      durationMs: 4_200,
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'prov-0',
+          model: 'llama-3.1-8b-instant',
+          kind: 'server_error',
+          status: 503,
+          dispatched: true,
+          leg: 'cheap',
+        },
+      ],
+      routeLegs: [
+        { leg: 'cheap', end: 'exhausted', endedMs: 2_450 },
+        {
+          leg: 'escalation',
+          end: 'cancelled',
+          endedMs: 4_190,
+          ask: 100_000,
+          stopped: { index: 0, model: 'claude-3-5-sonnet-latest', sent: true },
+          clamps: [{ index: 0, model: 'claude-3-5-sonnet-latest', to: 8_192 }],
+        },
+      ],
+    },
     ...client.requestRows,
   ];
 }

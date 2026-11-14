@@ -15,6 +15,10 @@ heading is started.
 
 ## [Unreleased]
 
+### Added
+
+- **Each request records how every leg of its route ended, and the Route Trace draws it.** A new `routeLegs` field (migration 0048, column `request_log.route_legs`, not backfilled) records per leg why and when it ended, the member that stopped it (including a client cancel's in-flight member), and the capability and output-cap deferrals and clamps; the trace draws deferral rows, clamp notes, the stopper and the escalation's cause and time, a cancelled request keeps its attempt trail (`attemptFailures` can now be non-null on a `cancelled` row), and three narrow routing-reason changes are noted in the release.
+
 ### Changed
 
 - **An escalated request keeps its cheap leg's attempts, including a call the cheap deadline cut off.** A cascade request whose strong tier served cleanly after its cheap leg failed now keeps that leg's attempts (it is still recorded `success`), and a cheap call cut off by the cheap deadline is recorded and reads `no reply by the cheap deadline` in the Route Trace; in the request listing, `attemptFailures` can now be non-null on an escalated `success` row and an entry can carry `stopReason`. Rows recorded earlier are not backfilled.

@@ -392,6 +392,9 @@ export function buildRequestRows(n: number): RequestRow[] {
               },
             ]
           : null,
+      // The route record (record-route-legs): null on every default row, so the default corpus
+      // draws what it drew before the column; the tests that need a record build it.
+      routeLegs: null,
     });
   }
   return rows;

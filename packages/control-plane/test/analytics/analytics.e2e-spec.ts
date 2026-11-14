@@ -104,6 +104,9 @@ interface LogSeed {
    * file stays a legacy row (add-route-trace-inspector task 2.1). */
   priceVersionId?: string | null;
   structuralScope?: string | null;
+  /** The route record (record-route-legs), stored verbatim. Omitted = NULL: a row no
+   * walk produced, or one predating the column — every older seed stays one. */
+  routeLegs?: unknown[];
 }
 
 describe('analytics API (#17)', () => {
@@ -148,8 +151,8 @@ describe('analytics API (#17)', () => {
          semantic_band, semantic_score, semantic_source, semantic_revision, provider_kind,
          attempt_failures, workload_class, workload_score, workload_source, workload_revision,
          batch_id, price_mode, escalation_source, structural_epoch, billed,
-         price_version_id, structural_scope)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42)`,
+         price_version_id, structural_scope, route_legs)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'test',$8,$9,$10,$11,1,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43)`,
       [
         id,
         owner,
@@ -193,6 +196,7 @@ describe('analytics API (#17)', () => {
         s.billed ?? null,
         s.priceVersionId ?? null,
         s.structuralScope ?? null,
+        s.routeLegs !== undefined ? JSON.stringify(s.routeLegs) : null,
       ],
     );
     return id;
@@ -628,9 +632,11 @@ describe('analytics API (#17)', () => {
         expect(row.errorMarkers).toBeNull();
         // fix-bad-request-dead-end: the trail follows the WALK, so a `fallback` row keeps
         // it, and (keep-cheap-leg-attempt-trail) so does an ESCALATED `success` row, whose
-        // status reads the escalation leg alone. It is null only on a `success` that did
-        // not escalate and on `cancelled` — the listing must not contradict the recorder.
-        if (row.status === 'cancelled' || (row.status === 'success' && row.escalated !== true))
+        // status reads the escalation leg alone; record-route-legs: so does a `cancelled`
+        // row, which keeps the trail it walked before the client left. It is always null
+        // only on a `success` that did not escalate — the listing must not contradict the
+        // recorder.
+        if (row.status === 'success' && row.escalated !== true)
           expect(row.attemptFailures).toBeNull();
         // non-evaluated rows carry all-null telemetry
         expect(row.structuralBand).toBeNull();
@@ -686,6 +692,107 @@ describe('analytics API (#17)', () => {
     expect(first).not.toHaveProperty('stopReason');
     expect(second).toHaveProperty('stopReason', 'deadline');
     expect(byId.get(plainId)!.attemptFailures).toBeNull(); // a success that did not escalate
+  });
+
+  // record-route-legs (analytics-api "A failed or cancelled row lists the member that
+  // stopped its walk" and "A cancelled row lists the trail it walked"): the listing passes
+  // `routeLegs` and a cancelled row's trail through verbatim, derives nothing from them,
+  // and a cancelled row recorded before the rule (or with nothing walked) reads null.
+  it('requests: route records and a cancelled row’s trail ride the listing verbatim', async () => {
+    const c = await mkUser();
+    const trail = [
+      {
+        index: 0,
+        providerId: 'p1',
+        model: 'rl-first',
+        kind: 'rate_limit',
+        status: 429,
+        dispatched: true,
+      },
+    ];
+    // A non-retryable stop at member 1 (the error row names member 0, recorded as null here).
+    const stoppedLegs = [
+      {
+        leg: 'primary',
+        end: 'stopped',
+        endedMs: 95,
+        stopped: { index: 1, model: 'rl-legal', sent: true, kind: 'policy_block', status: 451 },
+      },
+    ];
+    // The client left while member 1 was in flight, before commit.
+    const cancelledLegs = [
+      {
+        leg: 'primary',
+        end: 'cancelled',
+        endedMs: 812,
+        stopped: { index: 1, model: 'rl-b', sent: true },
+      },
+    ];
+    // The client left after member 1's stream committed: the leg served.
+    const committedLegs = [{ leg: 'primary', end: 'served', servedIndex: 1, endedMs: 40 }];
+    const stoppedId = await seedLog(c, {
+      cost: 0,
+      at: DAY1,
+      status: 'error',
+      errorKind: 'policy_block',
+      errorStatus: 451,
+      attemptFailures: trail,
+      routeLegs: stoppedLegs,
+    });
+    const cancelledId = await seedLog(c, {
+      cost: 1,
+      at: DAY1,
+      status: 'cancelled',
+      attemptFailures: trail,
+      routeLegs: cancelledLegs,
+    });
+    const committedId = await seedLog(c, {
+      cost: 1,
+      at: DAY1B,
+      status: 'cancelled',
+      attemptFailures: trail,
+      routeLegs: committedLegs,
+    });
+    // A cancelled row recorded before cancelled rows kept their trail and before the
+    // column existed: both read null, never backfilled.
+    const legacyId = await seedLog(c, { cost: 1, at: DAY2, status: 'cancelled' });
+    const res = await q('requests', c, { ...RANGE });
+    expect(res.status).toBe(200);
+    const byId = new Map(
+      (res.body.rows as Record<string, unknown>[]).map((r) => [r['id'] as string, r]),
+    );
+    expect(byId.size).toBe(4);
+
+    const stopped = byId.get(stoppedId)!;
+    expect(stopped['routeLegs']).toEqual(stoppedLegs);
+    expect(stopped).toMatchObject({ status: 'error', errorKind: 'policy_block', errorStatus: 451 });
+    // The row's model and provider fields are what it recorded — never the stopper's.
+    expect(stopped).toMatchObject({ modelId: null, providerId: null, modelLabel: null });
+
+    const cancelled = byId.get(cancelledId)!;
+    expect(cancelled['routeLegs']).toEqual(cancelledLegs);
+    expect(cancelled['attemptFailures']).toEqual(trail); // kept, verbatim
+    for (const f of ['errorKind', 'errorStatus', 'errorMessage', 'errorRequestId', 'errorMarkers'])
+      expect(cancelled).toHaveProperty(f, null);
+
+    const committed = byId.get(committedId)!;
+    expect(committed['routeLegs']).toEqual(committedLegs);
+    expect(committed['attemptFailures']).toEqual(trail);
+
+    const legacy = byId.get(legacyId)!;
+    expect(legacy).toHaveProperty('routeLegs', null);
+    expect(legacy).toHaveProperty('attemptFailures', null);
+
+    // The status filter counts them as `cancelled`, trail and all.
+    const filtered = await q('requests', c, { ...RANGE, status: 'cancelled' });
+    expect((filtered.body.rows as { id: string }[]).map((r) => r.id).sort()).toEqual(
+      [cancelledId, committedId, legacyId].sort(),
+    );
+    for (const r of res.body.rows as Record<string, unknown>[]) {
+      expect(r).not.toHaveProperty('ownerUserId');
+      expect(r).not.toHaveProperty('orgId');
+    }
+    await pool.query('DELETE FROM "user" WHERE id = $1', [c]);
   });
 
   it('requests: semantic telemetry rides the safe view; layer=semantic filters; unknown layer is 400 (add-semantic-routing)', async () => {
@@ -2228,6 +2335,8 @@ describe('analytics API (#17)', () => {
       // A synchronous row predates the column and reads as null (i.e. `sync`).
       const sync = rows.find((r) => r.batchId === null)!;
       expect(sync.priceMode).toBeNull();
+      // record-route-legs: no chain walk produced a batch item, so none carries a route.
+      for (const r of rows) expect(r).toHaveProperty('routeLegs', null);
     });
 
     it('partitions the listing by mode and narrows it to one owned job', async () => {
@@ -3045,9 +3154,10 @@ describe('analytics API (#17)', () => {
   });
 
   describe('route-trace fields on the listing (add-route-trace-inspector)', () => {
-    /** The eight fields the listing is contracted to expose (analytics-api "The request
-     * listing exposes the route-trace fields"). Each is already spread from the row; these
-     * cases pin them so a projection that narrows the safe view fails here. */
+    /** The nine fields the listing is contracted to expose (analytics-api "The request
+     * listing exposes the route-trace fields"; `routeLegs` added by record-route-legs).
+     * Each is already spread from the row; these cases pin them so a projection that
+     * narrows the safe view fails here. */
     const ROUTE_TRACE_FIELDS = [
       'tierAssigned',
       'usageEstimated',
@@ -3057,7 +3167,20 @@ describe('analytics API (#17)', () => {
       'priceVersionId',
       'structuralScope',
       'structuralEpoch',
+      'routeLegs',
     ] as const;
+    /** The escalated row's route record: the cheap answer judged bad, then served. */
+    const ESCALATED_LEGS = [
+      { leg: 'cheap', end: 'gate_failed', servedIndex: 0, endedMs: 812 },
+      {
+        leg: 'escalation',
+        end: 'served',
+        servedIndex: 0,
+        endedMs: 2_430,
+        ask: 4_096,
+        clamps: [{ index: 0, model: 'rt-strong', to: 2_048 }],
+      },
+    ];
     const NULLABLE_FIELDS = ROUTE_TRACE_FIELDS.filter((f) => f !== 'usageEstimated');
     const traceFields = (r: Record<string, unknown>): Record<string, unknown> =>
       Object.fromEntries(ROUTE_TRACE_FIELDS.map((f) => [f, r[f]]));
@@ -3139,6 +3262,7 @@ describe('analytics API (#17)', () => {
         structuralBand: 'ambiguous',
         structuralScore: 0.4,
         structuralBandSource: 'threshold',
+        routeLegs: ESCALATED_LEGS,
         at: DAY1,
       });
       // A legacy, explicitly routed, unpriced row: every nullable route-trace column is
@@ -3215,7 +3339,7 @@ describe('analytics API (#17)', () => {
       );
     };
 
-    it('the listing carries the eight route-trace fields verbatim, nulls included, and no ownership columns', async () => {
+    it('the listing carries the nine route-trace fields verbatim, nulls included, and no ownership columns', async () => {
       const rows = await rowsById(T);
       expect(rows.size).toBe(5);
       const escalated = rows.get(id['escalated']!)!;
@@ -3229,8 +3353,10 @@ describe('analytics API (#17)', () => {
         priceVersionId: recordedVersion,
         structuralScope: 'tenant',
         structuralEpoch: 3,
+        routeLegs: ESCALATED_LEGS, // verbatim, in execution order (record-route-legs)
       });
-      // The null-column row: every nullable field is present AND null, never omitted.
+      // The null-column row: every nullable field is present AND null, never omitted —
+      // `routeLegs` included: a row predating the column is never backfilled.
       const legacy = rows.get(id['legacy']!)!;
       expect(legacy).toMatchObject({ decisionLayer: 'explicit', cost: null, escalated: false });
       for (const f of NULLABLE_FIELDS) expect(legacy).toHaveProperty(f, null);

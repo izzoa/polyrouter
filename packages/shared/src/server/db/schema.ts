@@ -14,6 +14,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import type { AttemptFailureEntry } from '../../attempt-failures';
+import type { RouteLeg } from '../../route-legs';
 import {
   BATCH_ENDPOINTS,
   BATCH_JOB_ERROR_KINDS,
@@ -723,12 +724,22 @@ export const requestLogs = pgTable(
     // non-error rows and for rows predating capture — never backfilled.
     errorMarkers: jsonb('error_markers').$type<string[]>(),
     // Per-attempt failure metadata (add-fallback-attempt-detail): the pre-commit
-    // walked failure/skip trail across every executed leg, set on `error` and
-    // `fallback` rows and on an escalated `success` row (keep-cheap-leg-attempt-
-    // trail); null on a `success` that did not escalate, on `cancelled` rows, and
-    // on rows predating the column (unknown-not-wrong, never backfilled). Structure only — the entry
-    // shape admits no free-text field (invariant 8).
+    // walked failure/skip trail across every executed leg, set on `error`,
+    // `fallback` and `cancelled` rows (a cancel keeps the members walked before the
+    // client left; the member in flight did not fail, so `route_legs` names it —
+    // record-route-legs) and on an escalated `success` row (keep-cheap-leg-attempt-
+    // trail); null on a `success` that did not escalate, on a walk that recorded no
+    // entry, and on rows predating the column or the cancelled rule
+    // (unknown-not-wrong, never backfilled). Structure only — the entry shape admits
+    // no free-text field (invariant 8).
     attemptFailures: jsonb('attempt_failures').$type<AttemptFailureEntry[]>(),
+    // The route record (record-route-legs design D1/D6): one entry per executed walk
+    // leg — how and when it ended, the member that stopped it, and its deferrals and
+    // clamps. Set on every row a proxy chain walk settled, whatever its status; null on
+    // batch rows, rows no walk produced and rows predating the column (never
+    // backfilled). No default, CHECK or index: the writer sanitizes it so it can never
+    // fail an insert. Structure only (invariant 8).
+    routeLegs: jsonb('route_legs').$type<RouteLeg[]>(),
     escalated: boolean('escalated').default(false).notNull(),
     qualitySignal: doublePrecision('quality_signal'),
     /** WHY the cascade escalated (add-auto-threshold-calibration):

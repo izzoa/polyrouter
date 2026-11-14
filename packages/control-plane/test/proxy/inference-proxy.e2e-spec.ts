@@ -45,7 +45,11 @@ import {
 import { ProxyService } from '../../src/proxy/proxy.service';
 import { NotificationProducers } from '../../src/producers/notification-producers';
 import { BudgetService } from '../../src/budgets/budget-service';
-import { RequestRecorder } from '../../src/recording/request-recorder';
+import {
+  RequestRecorder,
+  type RecordOutcome,
+  type RecordingContext,
+} from '../../src/recording/request-recorder';
 import { BodyCaptureService } from '../../src/body-capture/body-capture.service';
 import { ObservabilityModule } from '../../src/observability/observability.module';
 import { StreamDrainRegistry } from '../../src/proxy/stream-drain.registry';
@@ -66,7 +70,24 @@ interface Tenant {
   userId: string;
   key: string;
   models: Record<string, string>; // externalId -> model id
+  /** The provider of the `stopper` chain (record-route-legs), its own so no other
+   * test's failures can open its breaker and turn a dispatch into a skip. */
+  stopperProviderId: string;
 }
+
+/** What the proxy handed the recorder (record-route-legs task 6.2). This suite asserts
+ * routing, so the recorder writes nothing; it only keeps the context and the outcome
+ * every settled request was recorded with, which is everything the row's provider and
+ * model columns, price snapshot, cost and `billed` are computed from. */
+const recorded: { ctx: RecordingContext; outcome: RecordOutcome; at: number }[] = [];
+
+/** The `stopper` chain's per-member model-own prices: distinct, so a snapshot taken
+ * from the stopping member instead of member 0 would be visible. */
+const STOPPER_PRICES = {
+  'oai-ratelimit-stop': { inputPricePer1m: 2, outputPricePer1m: 10 },
+  'oai-legal-stop': { inputPricePer1m: 7, outputPricePer1m: 70 },
+  'oai-after-stop': { inputPricePer1m: 5, outputPricePer1m: 50 },
+} as const;
 
 /** The global (NON-tenant) catalog rows the capability ladder is asserted against
  * (honest-model-capabilities). Seeded ONCE, not per tenant: `model_price` has no
@@ -267,13 +288,43 @@ async function seedTenant(
     ]);
   }
 
+  // record-route-legs: `[429, 451, ok]` on a provider of its own — member 0 fails
+  // retryably, member 1's legal denial stops the walk, member 2 is never tried.
+  const stopperProvider = await port.providers.insert(principal, {
+    name: 'openai-stopper',
+    kind: 'local',
+    protocol: 'openai_compatible',
+    baseUrl: stubUrl,
+  });
+  for (const [ext, price] of Object.entries(STOPPER_PRICES)) {
+    const m = await port.models.createForProvider(principal, stopperProvider.id, {
+      externalModelId: ext,
+      ...price,
+    });
+    models[ext] = m!.id;
+  }
+  {
+    const t = await port.tiers.insert(principal, { key: 'stopper' });
+    await port.routingEntries.replaceForTier(
+      principal,
+      t.id,
+      Object.keys(STOPPER_PRICES).map((ext) => models[ext]!),
+    );
+  }
+
   const minted = mintAgentKey(HMAC);
   await pool.query(
     `INSERT INTO agent (id, owner_user_id, name, api_key_hash, api_key_prefix, harness_type)
      VALUES (gen_random_uuid(), $1, 'agent', $2, $3, 'curl')`,
     [userId, minted.hash, minted.prefix],
   );
-  return { principal, userId, key: minted.key, models };
+  return {
+    principal,
+    userId,
+    key: minted.key,
+    models,
+    stopperProviderId: stopperProvider.id,
+  };
 }
 
 describe('inference proxy e2e', () => {
@@ -317,7 +368,15 @@ describe('inference proxy e2e', () => {
           },
         },
         StreamDrainRegistry,
-        { provide: RequestRecorder, useValue: { record: () => undefined } }, // #10 doesn't assert logging
+        {
+          // #10 doesn't assert logging: nothing is written. record-route-legs only keeps
+          // what each settled request was recorded with (see `recorded`).
+          provide: RequestRecorder,
+          useValue: {
+            record: (ctx: RecordingContext, outcome: RecordOutcome): void =>
+              void recorded.push({ ctx, outcome, at: Date.now() }),
+          },
+        },
         {
           // add-body-capture: capture disarmed — these suites assert routing, not capture.
           provide: BodyCaptureService,
@@ -609,6 +668,72 @@ describe('inference proxy e2e', () => {
       expect(res.status).toBe(451);
       expect(stub.requests.length).toBe(before + 1); // ONLY the blocked member
     });
+
+    // record-route-legs task 6.2 (request-logging "A non-retryable stop names the member
+    // that stopped the walk"; design D8). `stopper` = [429, 451, ok]: member 0 fails
+    // retryably, member 1's legal denial stops the walk, member 2 is never tried. The
+    // route record names member 1; everything the row's provider/model columns, price
+    // snapshot, cost and `billed` are computed from still names member 0, as before.
+    it.each([[false], [true]])(
+      'a 451 at chain member 1 is recorded as the stopping member, and the row still names member 0 (stream=%s)',
+      async (stream) => {
+        recorded.length = 0;
+        const before = stub.requests.length;
+        const res = await chat(A.key, { model: 'stopper', stream, messages: [] });
+        expect(res.status).toBe(451);
+        expect(stub.requests.length - before).toBe(2); // member 2 was never tried
+        const mine = recorded.filter((r) => r.ctx.tierAssigned === 'stopper');
+        expect(mine).toHaveLength(1);
+        const { ctx, outcome, at } = mine[0]!;
+
+        expect(ctx.routeLegs).toEqual([
+          {
+            leg: 'primary',
+            end: 'stopped',
+            endedMs: expect.any(Number) as number,
+            stopped: {
+              index: 1,
+              model: 'oai-legal-stop',
+              sent: true,
+              kind: 'policy_block',
+              status: 451,
+            },
+          },
+        ]);
+        const endedMs = ctx.routeLegs![0]!.endedMs;
+        expect(Number.isInteger(endedMs)).toBe(true);
+        expect(endedMs).toBeGreaterThanOrEqual(0);
+        expect(endedMs).toBeLessThanOrEqual(at - ctx.startedAt); // read before the record
+
+        // The columns and the price inputs name member 0, never the stopper.
+        expect(ctx.providerId).toBe(A.stopperProviderId);
+        expect(ctx.modelId).toBe(A.models['oai-ratelimit-stop']);
+        expect(ctx.model).toMatchObject({
+          externalModelId: 'oai-ratelimit-stop',
+          ...STOPPER_PRICES['oai-ratelimit-stop'],
+        });
+        // The outcome is the stop's own: `error`, the 451's detail, no usage, and the
+        // walk's billing evidence (a 429 and a 451, both provider rejections) as before.
+        expect(outcome).toMatchObject({
+          status: 'error',
+          outputChars: 0,
+          unbilledWalk: true,
+          error: { kind: 'policy_block', status: 451 },
+        });
+        expect(outcome.providerUsage).toBeUndefined();
+        // A non-retryable stop's terminal error never enters the trail: member 0 alone.
+        expect(ctx.attemptFailures).toHaveLength(1);
+        expect(ctx.attemptFailures![0]).toMatchObject({
+          index: 0,
+          providerId: A.stopperProviderId,
+          model: 'oai-ratelimit-stop',
+          kind: 'rate_limit',
+          status: 429,
+          dispatched: true,
+        });
+        expect(ctx.routingReason).not.toContain('oai-after-stop');
+      },
+    );
 
     // design.md D4: the breaker does NOT bound a single request. It opens on a
     // THRESHOLD of failures (5), not the first — so a five-member chain on one dry

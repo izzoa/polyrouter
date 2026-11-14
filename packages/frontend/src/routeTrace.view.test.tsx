@@ -16,7 +16,8 @@
  * (neither is layout); widths, the 32px gutter and the 20px chip are measured in the browser
  * suites (`browser/responsive.spec.ts`, `browser/heightFamily.spec.ts`).
  */
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { render } from 'solid-js/web';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -1089,5 +1090,392 @@ describe('a cheap call cut off by the deadline reads as such on screen (keep-che
     const kind = before.querySelector<HTMLElement>('li[data-kind="attempt"] .rt-failure')!;
     expect(kind.textContent).toBe('unavailable');
     expect(kind.classList.contains('mono')).toBe(true);
+  });
+});
+
+/* ---- record-route-legs (task 7.2): a row without a route record renders as before ------ */
+
+/** The golden: each legacy row's trace texts and a hash of its rendered route trace and Decision
+ * section, captured from the code BEFORE record-route-legs (commit 2406bd1) over the corpus below.
+ * Regenerate only for a deliberate change to how a row without a route record renders:
+ * `UPDATE_LEGACY_TRACE_GOLDEN=1 npx vitest run src/routeTrace.view.test.tsx`, then
+ * `npx prettier --write src/test/legacyRouteTrace.golden.json`. */
+const LEGACY_GOLDEN_FILE = join(import.meta.dirname, 'test/legacyRouteTrace.golden.json');
+
+interface LegacyRender {
+  texts: string[];
+  sha256: string;
+}
+
+/** Every row the suites above open, a few more legacy shapes, and the default fake corpus, each
+ * also with an empty route record (`[]`, which the writer never stores: it is no record). */
+function legacyCorpus(): RequestRow[] {
+  const named: RequestRow[] = [
+    ...Object.values(ROWS),
+    UNRECORDED,
+    KEPT,
+    DEADLINE,
+    { ...ROWS.success, id: 'lg-cancelled', status: 'cancelled' },
+    { ...ROWS.success, id: 'lg-throttled', status: 'throttled' },
+    { ...ROWS.cascade, id: 'lg-cascade-cancelled', status: 'cancelled' },
+    { ...ROWS.cascade, id: 'lg-cascade-error', status: 'error' },
+    { ...UNRECORDED, id: 'lg-unrecorded-error', status: 'error' },
+    { ...UNRECORDED, id: 'lg-unrecorded-replayed', attemptCostMicros: 3_100, qualitySignal: 0.81 },
+    { ...KEPT, id: 'lg-kept-cancelled', status: 'cancelled' },
+    // A non-retryable stop at member 1 after member 0 failed: no terminal entry.
+    {
+      ...ROWS.error,
+      id: 'lg-error-stop',
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'p1',
+          model: 'gpt-a',
+          kind: 'rate_limit',
+          status: 429,
+          dispatched: true,
+        },
+      ],
+    },
+    ...buildRequestRows(30),
+  ];
+  return [...named, ...named.map((r) => ({ ...r, id: `${r.id}-empty`, routeLegs: [] }))];
+}
+
+describe('a row without a route record renders exactly as before (record-route-legs 7.2)', () => {
+  it('every legacy row draws the same trace and Decision section, byte for byte', async () => {
+    const corpus = legacyCorpus();
+    const got: Record<string, LegacyRender> = {};
+    // Twenty rows a mount: the Requests page loads 25 a page, and `select` reads loaded rows.
+    for (let i = 0; i < corpus.length; i += 20) {
+      h?.dispose();
+      h = await mount(corpus.slice(i, i + 20));
+      for (const r of corpus.slice(i, i + 20)) {
+        const drawer = await openRow(r.id);
+        const html = ['route-trace', 'inspector-decision']
+          .map((id) => drawer.querySelector(`[data-testid="${id}"]`)?.outerHTML ?? '')
+          .join('\n');
+        got[r.id] = {
+          texts: texts(drawer),
+          sha256: createHash('sha256').update(html).digest('hex'),
+        };
+      }
+    }
+    if (process.env['UPDATE_LEGACY_TRACE_GOLDEN'] === '1') {
+      writeFileSync(LEGACY_GOLDEN_FILE, `${JSON.stringify(got, null, 2)}\n`);
+    }
+    const golden = JSON.parse(readFileSync(LEGACY_GOLDEN_FILE, 'utf8')) as Record<
+      string,
+      LegacyRender
+    >;
+    expect(Object.keys(got)).toHaveLength(Object.keys(golden).length);
+    // Texts first, so a regression names the words it changed before the markup hash does.
+    for (const [id, want] of Object.entries(golden)) expect(got[id]?.texts, id).toEqual(want.texts);
+    for (const [id, want] of Object.entries(golden)) expect(got[id]?.sha256, id).toBe(want.sha256);
+    // About a hundred inspector opens: well past the default 5s on a loaded machine.
+  }, 120_000);
+});
+
+/* ---- record-route-legs (task 7.3): the route record on screen ------------------------- */
+
+/** A member A that failed first, on a primary chain. */
+const FAILED_A = {
+  index: 0,
+  providerId: 'p1',
+  model: 'gpt-a',
+  kind: 'rate_limit',
+  status: 429,
+  dispatched: true,
+} as const;
+
+/** A non-retryable stop at member B, sent, after A failed (dashboard-analytics "A non-retryable
+ * stop at a later member is drawn"). */
+const STOPPED: RequestRow = {
+  ...BASE,
+  ...plain,
+  id: 'rl-stopped',
+  createdAt: at(8),
+  status: 'error',
+  durationMs: 1_200,
+  attemptFailures: [FAILED_A],
+  routeLegs: [
+    {
+      leg: 'primary',
+      end: 'stopped',
+      endedMs: 1_150,
+      stopped: { index: 1, model: 'gpt-b', sent: true, kind: 'policy_block', status: 451 },
+    },
+  ],
+};
+/** A cancel that caught member B in flight, clamped, after A failed, with C deferred ("Recorded
+ * deferrals, clamps and stoppers are read as text"). */
+const IN_FLIGHT_ROW: RequestRow = {
+  ...BASE,
+  ...plain,
+  id: 'rl-in-flight',
+  createdAt: at(9),
+  status: 'cancelled',
+  durationMs: 800,
+  attemptFailures: [FAILED_A],
+  routeLegs: [
+    {
+      leg: 'primary',
+      end: 'cancelled',
+      endedMs: 790,
+      ask: 100_000,
+      stopped: { index: 1, model: 'gpt-b', sent: true },
+      deferred: [{ index: 2, model: 'gpt-text', reason: 'capability', capabilities: ['tools'] }],
+      clamps: [{ index: 1, model: 'gpt-b', to: 4_096 }],
+    },
+  ],
+};
+/** A kept cheap answer whose served member was clamped ("A kept cheap answer states its cap
+ * above its verdict"). */
+const CLAMPED_KEPT: RequestRow = {
+  ...KEPT,
+  id: 'rl-clamped-kept',
+  createdAt: at(10),
+  routeLegs: [
+    {
+      leg: 'cheap',
+      end: 'served',
+      endedMs: 1_100,
+      servedIndex: 0,
+      ask: 100_000,
+      clamps: [{ index: 0, model: 'llama-cheap', to: 4_096 }],
+    },
+  ],
+};
+/** An escalation with a deferral on each leg, its cheap leg exhausted at 2.45s. */
+const DEFERRED_CASCADE: RequestRow = {
+  ...UNRECORDED,
+  id: 'rl-deferred-cascade',
+  createdAt: at(11),
+  status: 'fallback',
+  attemptFailures: [
+    {
+      index: 0,
+      providerId: 'p-cheap',
+      model: 'cheap-1',
+      kind: 'timeout',
+      dispatched: true,
+      leg: 'cheap',
+    },
+    {
+      index: 0,
+      providerId: 'p-strong',
+      model: 'strong-1',
+      kind: 'rate_limit',
+      status: 429,
+      dispatched: true,
+      leg: 'escalation',
+    },
+  ],
+  routeLegs: [
+    {
+      leg: 'cheap',
+      end: 'exhausted',
+      endedMs: 2_450,
+      deferred: [{ index: 1, model: 'cheap-vl', reason: 'capability', capabilities: ['vision'] }],
+    },
+    {
+      leg: 'escalation',
+      end: 'served',
+      endedMs: 38_000,
+      servedIndex: 1,
+      ask: 100_000,
+      deferred: [{ index: 2, model: 'strong-small', reason: 'output_cap', cap: 4_096 }],
+    },
+  ],
+};
+/** A passing cheap answer whose replay failed: its signal is the gate's real score. */
+const REPLAYED: RequestRow = {
+  ...UNRECORDED,
+  id: 'rl-replayed',
+  createdAt: at(12),
+  qualitySignal: 0.81,
+  routeLegs: [
+    { leg: 'cheap', end: 'replay_failed', endedMs: 2_450, servedIndex: 0 },
+    { leg: 'escalation', end: 'served', endedMs: 38_000, servedIndex: 0 },
+  ],
+};
+const RECORDED = [STOPPED, IN_FLIGHT_ROW, CLAMPED_KEPT, DEFERRED_CASCADE, REPLAYED];
+
+/** Every stylesheet rule whose selector names `needle`, as `selector { body }`. */
+const rulesNaming = (needle: string): string[] =>
+  [...css.matchAll(/(?:^|\n)([^\n{}@]*?)\s*\{([^}]*)\}/g)]
+    .filter((m) => m[1]!.includes(needle))
+    .map((m) => `${m[1]!.trim()} { ${m[2]!.replace(/\s+/g, ' ').trim()} }`);
+
+describe('the inspector draws the route record (record-route-legs 7.3)', () => {
+  it('a non-retryable stopper is the leg’s last branch, in the failure red; the outcome names no one', async () => {
+    h = await mount([...RECORDED, ...Object.values(ROWS)]);
+    const drawer = await openRow(STOPPED.id);
+    expect(texts(drawer)).toEqual([
+      'billing-bot',
+      'router · explicit',
+      'gpt-a · rate_limit · HTTP 429',
+      'gpt-b · policy_block · HTTP 451',
+      'failed · 1.20s',
+    ]);
+    const stopper = items(drawer)[3]!;
+    expect(stopper.dataset['kind']).toBe('attempt');
+    expect(stopper.classList.contains('rt-node--failed')).toBe(true);
+    expect(stopper.querySelector('.rt-branch')).not.toBeNull();
+    const failure = stopper.querySelector<HTMLElement>('.rt-failure')!;
+    expect(failure.textContent).toBe('policy_block · HTTP 451');
+    expect(failure.classList.contains('mono')).toBe(true);
+    // The outcome names no provider and no model; the Decision section states what was recorded.
+    expect(items(drawer).at(-1)!.querySelector('.rt-model')).toBeNull();
+    expect(decisionRow(drawer, 'recorded provider')?.textContent).toBe('Provider C');
+  });
+
+  it('a deferral is a neutral spine row and the in-flight member a neutral, solid branch, both read as text', async () => {
+    h = await mount([...RECORDED, ...Object.values(ROWS)]);
+    const drawer = await openRow(IN_FLIGHT_ROW.id);
+    expect(texts(drawer)).toEqual([
+      'billing-bot',
+      'router · explicit',
+      'deferred · gpt-text · lacks tools',
+      'gpt-a · rate_limit · HTTP 429',
+      'gpt-b · in flight · output capped at 4,096',
+      'cancelled by client · 800ms',
+    ]);
+    const [, , deferral, failed, inFlight, outcome] = items(drawer);
+    // The deferral: a router decision on the spine, its word at the Label weight like a leg's,
+    // its model Mono, its reason bare text in the row's Ink 2. Never red, accent or a chip.
+    expect(deferral!.dataset['kind']).toBe('deferral');
+    expect(deferral!.classList.contains('rt-node--neutral')).toBe(true);
+    expect(deferral!.querySelector('.rt-branch'), 'a deferral sits on the spine').toBeNull();
+    expect(getComputedStyle(deferral!.querySelector('.rt-dot')!).left).toBe('0px');
+    expect(deferral!.querySelector('.rt-leg')?.textContent).toBe('deferred');
+    expect(deferral!.querySelector('.mono.rt-model')?.textContent).toBe('gpt-text');
+    expect(deferral!.querySelector('.rt-failure, .chip, [style]')).toBeNull();
+    expect(deferral!.dataset['series']).toBeUndefined();
+    // The in-flight member: a branch, neither failed nor skipped, so neither red nor dashed.
+    expect(inFlight!.dataset['kind']).toBe('attempt');
+    expect(inFlight!.className).toBe('rt-node rt-node--in_flight');
+    expect(inFlight!.querySelector('.rt-branch')).not.toBeNull();
+    expect(getComputedStyle(inFlight!.querySelector('.rt-dot')!).left).toBe('12px');
+    expect(inFlight!.querySelector('.rt-failure')).toBeNull();
+    expect(inFlight!.dataset['series']).toBeUndefined();
+    // Its one rule is the Ink 3 words: no stroke or ring rule, so they stay the solid Control
+    // Edge, and nothing makes it red, dashed or the accent.
+    expect(rulesNaming('in_flight')).toEqual(['.rt-node--in_flight { color: var(--text3); }']);
+    // Its clamp is the Caption-size Ink 3 meta part after its label, its figure tabular.
+    const clamp = inFlight!.querySelector<HTMLElement>('.rt-meta')!;
+    expect(clamp.textContent).toBe('output capped at 4,096');
+    expect(clamp.querySelector('.figure')?.textContent).toBe('4,096');
+    expect(clamp.closest('.rt-failure')).toBeNull();
+    // The failed member keeps its red label: the two differ in text and treatment.
+    expect(failed!.querySelector('.rt-failure')?.textContent).toBe('rate_limit · HTTP 429');
+    expect(outcome!.querySelector('.rt-model')).toBeNull();
+    expect(drawer.querySelectorAll('[data-series="focal"]')).toHaveLength(0);
+  });
+
+  it('a clamped kept answer states its cap on its own line, above its verdict, never the accent', async () => {
+    h = await mount([...RECORDED, ...Object.values(ROWS)]);
+    const drawer = await openRow(CLAMPED_KEPT.id);
+    const outcome = items(drawer).at(-1)!;
+    expect(outcome.textContent).toBe(
+      'Groq · llama-cheap · served · 1.24s · output capped at 4,096 of 100,000 asked · quality gate passed · q=0.87',
+    );
+    const clamp = outcome.querySelector<HTMLElement>('[data-testid="rt-clamp"]')!;
+    const kept = outcome.querySelector<HTMLElement>('[data-testid="rt-kept"]')!;
+    expect(clamp.textContent).toBe('output capped at 4,096 of 100,000 asked');
+    expect(before(clamp, kept)).toBe(true);
+    for (const line of [clamp, kept]) {
+      expect(line.className).toBe('rt-meta rt-sub');
+      expect(line.getAttribute('style')).toBeNull();
+      // Each line is set off by a visually hidden separator, so the node reads as one sentence.
+      expect((line.previousElementSibling as HTMLElement).className).toBe('sr-only');
+    }
+    expect([...clamp.querySelectorAll('.figure')].map((f) => f.textContent)).toEqual([
+      '4,096',
+      '100,000',
+    ]);
+    // The served branch is still the trace's one accent root; the latency its one time.
+    const focal = [...drawer.querySelectorAll<HTMLElement>('[data-series="focal"]')];
+    expect(focal).toEqual([outcome]);
+    expect(outcome.querySelectorAll('[data-testid="rt-latency"]')).toHaveLength(1);
+  });
+
+  it("each leg's deferrals sit under its leg row, and the escalation row states the cheap leg's end and time", async () => {
+    h = await mount([...RECORDED, ...Object.values(ROWS)]);
+    const drawer = await openRow(DEFERRED_CASCADE.id);
+    expect(texts(drawer)).toEqual([
+      'Lobechat',
+      'router · cascade',
+      'cheap leg',
+      'deferred · cheap-vl · lacks vision',
+      'cheap-1 · timeout',
+      'escalation · cheap leg exhausted · at 2.45s',
+      'deferred · strong-small · output cap 4,096 < 100,000 asked',
+      'strong-1 · rate_limit · HTTP 429',
+      'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+    ]);
+    const kinds = items(drawer).map((li) => li.dataset['kind']);
+    expect(kinds).toEqual([
+      'source',
+      'decision',
+      'leg',
+      'deferral',
+      'attempt',
+      'leg',
+      'deferral',
+      'attempt',
+      'outcome',
+    ]);
+    const escalation = items(drawer)[5]!;
+    // The time is one no-wrap unit, `at <time>`, its figure tabular; the row stays neutral.
+    const time = escalation.querySelector<HTMLElement>('.rt-nowrap')!;
+    expect(time.textContent).toBe('at 2.45s');
+    expect(time.querySelector('.figure')?.textContent).toBe('2.45s');
+    expect(escalation.classList.contains('rt-node--neutral')).toBe(true);
+    expect(escalation.querySelector('.rt-branch, .rt-failure, .chip')).toBeNull();
+    // The output-cap figures are tabular, the reason's words bare text.
+    const capRow = items(drawer)[6]!;
+    expect([...capRow.querySelectorAll('.figure')].map((f) => f.textContent)).toEqual([
+      '4,096',
+      '100,000',
+    ]);
+    // The served branch is still the only accent.
+    const focal = [...drawer.querySelectorAll<HTMLElement>('[data-series="focal"]')];
+    expect(focal.map((f) => f.dataset['kind'])).toEqual(['outcome']);
+    // No stylesheet rule styles a deferral row apart from a neutral spine row.
+    expect(rulesNaming('deferral')).toEqual([]);
+  });
+
+  it('a replay-failed cheap answer prints its quality signal, and the trace still draws no q=', async () => {
+    h = await mount([...RECORDED, ...Object.values(ROWS)]);
+    const drawer = await openRow(REPLAYED.id);
+    expect(decisionRow(drawer, 'quality signal')?.textContent).toBe('0.81');
+    expect(texts(drawer)).toEqual([
+      'Lobechat',
+      'router · cascade',
+      'cheap leg',
+      'escalation · cheap answer not delivered · at 2.45s',
+      'XiaomiMiMo · mimo-v2.6-pro · served · 38.89s',
+    ]);
+    expect(trace(drawer).textContent).not.toContain('q=');
+  });
+
+  it('every recorded row keeps one ordered list, its decoration hidden and free of controls', async () => {
+    h = await mount([...RECORDED, ...Object.values(ROWS)]);
+    for (const r of RECORDED) {
+      const drawer = await openRow(r.id);
+      expect(drawer.querySelectorAll('ol'), r.id).toHaveLength(1);
+      for (const li of items(drawer)) {
+        for (const hidden of li.querySelectorAll('[aria-hidden="true"]'))
+          expect(hidden.matches('.rt-spine, .rt-branch, .rt-dot')).toBe(true);
+        expect(li.querySelector('svg')).toBeNull();
+      }
+      expect(
+        trace(drawer).querySelectorAll('button, a, input, select, textarea, [tabindex]'),
+      ).toHaveLength(0);
+      // Only the failure label is red.
+      for (const red of trace(drawer).querySelectorAll('.rt-failure'))
+        expect(red.closest('li')!.classList.contains('rt-node--failed')).toBe(true);
+    }
   });
 });

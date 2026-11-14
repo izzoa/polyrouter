@@ -1510,6 +1510,12 @@ button:disabled[aria-busy='true'] {
   border-style: dashed;
   border-color: var(--text3);
 }
+/* In flight when the client left (record-route-legs design D7): contacted, so its stroke and
+   hollow ring stay the solid Control Edge, never dashed; not a failure, so its words are Ink 3,
+   never the failure red. Its text, `<model> · in flight`, says which. */
+.rt-node--in_flight {
+  color: var(--text3);
+}
 /* The lit route: the served branch's 2px stroke and filled node, the trace's one indigo. */
 .rt-node--lit {
   color: var(--text);

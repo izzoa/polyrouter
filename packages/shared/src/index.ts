@@ -60,6 +60,13 @@ export { HARNESS_TYPES, HARNESS_LABELS, connectionSnippet, isHarnessType } from 
 export type { HarnessType } from './harness';
 export { ATTEMPT_FAILURES_MAX } from './attempt-failures';
 export {
+  ROUTE_CAPABILITIES,
+  ROUTE_LEG_ENDS,
+  ROUTE_LEG_LIST_MAX,
+  ROUTE_LEG_NAMES,
+  ROUTE_LEGS_MAX,
+} from './route-legs';
+export {
   BATCH_COMPLETION_WINDOW_MS,
   BATCH_COMPLETION_WINDOW_TEXT,
   BATCH_ENDPOINTS,
@@ -75,3 +82,12 @@ export type {
   BatchJobTerminalStatus,
 } from './batch-jobs';
 export type { AttemptFailureEntry } from './attempt-failures';
+export type {
+  RouteCapability,
+  RouteClamp,
+  RouteDeferral,
+  RouteLeg,
+  RouteLegEnd,
+  RouteLegName,
+  RouteStopper,
+} from './route-legs';

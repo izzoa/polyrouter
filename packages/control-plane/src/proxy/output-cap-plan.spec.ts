@@ -1,10 +1,14 @@
-import type { AttemptFailure, ChainAttempt } from '@polyrouter/data-plane';
+import { ProviderError, type AttemptFailure, type ChainAttempt } from '@polyrouter/data-plane';
 import {
   capacitySuffix,
   cappedDefault,
+  dispatchedIndexes,
   planWalkedChain,
   resolveCatalogFacts,
+  routeLegsOf,
   withCapacity,
+  type CapacityAnnotations,
+  type LegWalk,
 } from './proxy.service';
 
 const attempt = (externalModelId: string): ChainAttempt => ({
@@ -269,6 +273,246 @@ describe('capacitySuffix — dispatched-only clamp recording', () => {
   it('no annotation (or nothing dispatched to note) → null', () => {
     expect(capacitySuffix(null, undefined, 0, [])).toBeNull();
     expect(capacitySuffix(null, { deferred: null, clampByIndex: new Map() }, 0, [])).toBeNull();
+  });
+});
+
+// record-route-legs task 4.1: the plan keeps its structure beside its strings, keyed by
+// the EFFECTIVE index the trail uses. The strings above are pinned byte-for-byte.
+describe('planWalkedChain — the plan as structure (record-route-legs)', () => {
+  const facts = (
+    entries: [string, { cap?: number; supportsVision?: boolean; supportsTools?: boolean }][],
+  ) => new Map(entries);
+
+  it('an output-cap deferral: its effective index, model and cap, the ask, and the tail clamp', () => {
+    const { capacity } = planWalkedChain(
+      bundleOf(['small-model', OPENAI], ['big-model', OPENAI]),
+      100_000,
+      caps([
+        ['openai:small-model', 16_384],
+        ['openai:big-model', 200_000],
+      ]),
+    );
+    expect(capacity?.deferred).toBe('output_cap_deferred small-model(16384<100000)');
+    expect(capacity?.ask).toBe(100_000);
+    expect(capacity?.deferredList).toEqual([
+      { index: 1, model: 'small-model', reason: 'output_cap', cap: 16_384 },
+    ]);
+    expect([...capacity!.clampTo]).toEqual([[1, 16_384]]);
+  });
+
+  it('a capability deferral: the capabilities it lacks, no clamp', () => {
+    const { capacity } = planWalkedChain(
+      bundleOf(['text-only', OPENAI], ['multimodal', OPENAI]),
+      null,
+      facts([
+        ['openai:text-only', { supportsVision: false }],
+        ['openai:multimodal', { supportsVision: true }],
+      ]),
+      ['vision'],
+    );
+    expect(capacity?.deferred).toBe('capability_deferred text-only(vision)');
+    expect(capacity?.ask).toBeNull();
+    expect(capacity?.deferredList).toEqual([
+      { index: 1, model: 'text-only', reason: 'capability', capabilities: ['vision'] },
+    ]);
+    expect(capacity?.clampTo.size).toBe(0);
+  });
+
+  it('a member deferred for both reasons is listed twice at one index, capability first', () => {
+    const { bundle: planned, capacity } = planWalkedChain(
+      bundleOf(['both', OPENAI], ['fine', OPENAI]),
+      100_000,
+      facts([
+        ['openai:both', { cap: 4_096, supportsVision: false, supportsTools: false }],
+        ['openai:fine', { cap: 200_000, supportsVision: true, supportsTools: true }],
+      ]),
+      ['tools', 'vision'],
+    );
+    expect(planned.meta.map((m) => m.model.externalModelId)).toEqual(['fine', 'both']);
+    expect(capacity?.deferred).toBe(
+      'output_cap_deferred both(4096<100000); capability_deferred both(tools+vision)',
+    );
+    expect(capacity?.deferredList).toEqual([
+      { index: 1, model: 'both', reason: 'capability', capabilities: ['tools', 'vision'] },
+      { index: 1, model: 'both', reason: 'output_cap', cap: 4_096 },
+    ]);
+    expect([...capacity!.clampTo]).toEqual([[1, 4_096]]);
+  });
+
+  it('a clamp with no deferral (an all-insufficient chain) keeps each member’s own cap', () => {
+    const { capacity } = planWalkedChain(
+      bundleOf(['a-model', OPENAI], ['b-model', OPENAI]),
+      100_000,
+      caps([
+        ['openai:a-model', 4_096],
+        ['openai:b-model', 16_384],
+      ]),
+    );
+    expect(capacity?.deferredList).toEqual([]);
+    expect([...capacity!.clampTo]).toEqual([
+      [0, 4_096],
+      [1, 16_384],
+    ]);
+    expect(capacity?.ask).toBe(100_000);
+  });
+
+  it('indexes follow the EFFECTIVE order across the capability groups, sorted by index', () => {
+    const { bundle: planned, capacity } = planWalkedChain(
+      bundleOf(['both', OPENAI], ['short', OPENAI], ['clamped', OPENAI], ['fine', OPENAI]),
+      100_000,
+      facts([
+        ['openai:both', { cap: 4_096, supportsVision: false }],
+        ['openai:short', { cap: 200_000, supportsVision: false }],
+        ['openai:clamped', { cap: 4_096, supportsVision: true }],
+        ['openai:fine', { cap: 200_000, supportsVision: true }],
+      ]),
+      ['vision'],
+    );
+    const order = planned.meta.map((m) => m.model.externalModelId);
+    expect(order).toEqual(['fine', 'clamped', 'short', 'both']);
+    expect(capacity?.deferredList.map((d) => [d.index, d.model, d.reason])).toEqual([
+      [1, 'clamped', 'output_cap'],
+      [2, 'short', 'capability'],
+      [3, 'both', 'capability'],
+      [3, 'both', 'output_cap'],
+    ]);
+    for (const d of capacity!.deferredList) expect(order[d.index]).toBe(d.model);
+    expect([...capacity!.clampTo.keys()]).toEqual([1, 3]);
+  });
+
+  it('the record carries the ask only beside an output-cap fact', () => {
+    const served: LegWalk = { servedIndex: 0, failures: [] };
+    const leg = (
+      capacity: CapacityAnnotations | undefined,
+      meta: readonly { model: { externalModelId: string } }[],
+    ) => routeLegsOf([{ leg: 'primary', walk: served, meta, capacity, endedMs: 1 }])[0]!;
+    // a capability-only deferral on a request that DID ask: no ask recorded
+    const capOnly = planWalkedChain(
+      bundleOf(['text-only', OPENAI], ['multimodal', OPENAI]),
+      1_000,
+      facts([['openai:text-only', { supportsVision: false }]]),
+      ['vision'],
+    );
+    expect(capOnly.capacity?.ask).toBe(1_000);
+    const capLeg = leg(capOnly.capacity, capOnly.bundle.meta);
+    expect(capLeg.deferred).toHaveLength(1);
+    expect(capLeg.ask).toBeUndefined();
+    // an output-cap deferral: the ask rides with it
+    const outputCap = planWalkedChain(
+      bundleOf(['small-model', OPENAI], ['big-model', OPENAI]),
+      100_000,
+      caps([['openai:small-model', 16_384]]),
+    );
+    expect(leg(outputCap.capacity, outputCap.bundle.meta).ask).toBe(100_000);
+  });
+});
+
+// record-route-legs task 4.2: ONE dispatched set feeds the reason's capacity note and the
+// record's clamps and deferrals, so the two never disagree.
+describe('one dispatched set — the capacity note and the route record agree', () => {
+  const meta = ['a', 'b', 'c'].map((externalModelId) => ({ model: { externalModelId } }));
+  const ann: CapacityAnnotations = {
+    deferred: 'output_cap_deferred c(8<100)',
+    clampByIndex: new Map([[1, 'output_cap_clamped 100→4 (b)']]),
+    ask: 100,
+    deferredList: [{ index: 2, model: 'c', reason: 'output_cap', cap: 8 }],
+    clampTo: new Map([[1, 4]]),
+  };
+  const err = (kind: 'unavailable' | 'policy_block', status?: number) =>
+    new ProviderError(kind, 'x', status !== undefined ? { status } : {});
+  const failed = (index: number, dispatched = true): AttemptFailure => ({
+    index,
+    error: err('unavailable', 503),
+    dispatched,
+  });
+  /** The reason's note and the record's leg for ONE unserved walk. */
+  const both = (walk: Extract<LegWalk, { ended: unknown }>) => ({
+    note: capacitySuffix(null, ann, null, walk.failures, walk.stopped),
+    leg: routeLegsOf([{ leg: 'primary', walk, meta, capacity: ann, endedMs: 0 }])[0]!,
+  });
+
+  it('a SENT policy_block stopper’s clamp appears in the reason and the record', () => {
+    const { note, leg } = both({
+      ended: 'stopped',
+      stopped: { index: 1, sent: true },
+      error: err('policy_block', 451),
+      failures: [failed(0)],
+    });
+    expect(note).toBe('output_cap_deferred c(8<100); output_cap_clamped 100→4 (b)');
+    expect(leg.clamps).toEqual([{ index: 1, model: 'b', to: 4 }]);
+    expect(leg.deferred).toEqual(ann.deferredList); // a never-reached member's deferral too
+    expect(leg.ask).toBe(100);
+  });
+
+  it('an in-flight cancelled member’s clamp appears in both', () => {
+    const { note, leg } = both({
+      ended: 'cancelled',
+      stopped: { index: 1, sent: true },
+      error: err('unavailable'),
+      failures: [failed(0)],
+    });
+    expect(note).toContain('output_cap_clamped 100→4 (b)');
+    expect(leg.clamps).toEqual([{ index: 1, model: 'b', to: 4 }]);
+  });
+
+  it('an UNSENT stopper’s clamp appears in neither', () => {
+    const { note, leg } = both({
+      ended: 'deadline',
+      stopped: { index: 1, sent: false },
+      error: err('unavailable'),
+      failures: [failed(0)],
+    });
+    expect(note).toBe('output_cap_deferred c(8<100)'); // member 0 was dispatched
+    expect(leg.clamps).toBeUndefined();
+    expect(leg.deferred).toEqual(ann.deferredList);
+  });
+
+  it('a deadline-cut member is one dispatched member, its clamp recorded once', () => {
+    const cut: AttemptFailure = { ...failed(1), stop: 'deadline' };
+    const { note, leg } = both({
+      ended: 'deadline',
+      stopped: { index: 1, sent: true },
+      error: cut.error,
+      failures: [failed(0), cut],
+    });
+    expect(note).toBe('output_cap_deferred c(8<100); output_cap_clamped 100→4 (b)');
+    expect(leg.clamps).toEqual([{ index: 1, model: 'b', to: 4 }]);
+  });
+
+  it('a leg whose every member was skipped records no deferral in either', () => {
+    const { note, leg } = both({
+      ended: 'exhausted',
+      error: err('unavailable'),
+      failures: [failed(0, false), failed(1, false), failed(2, false)],
+    });
+    expect(note).toBeNull(); // today's note carried the deferral unconditionally
+    expect(leg).toEqual({ leg: 'primary', end: 'exhausted', endedMs: 0 });
+  });
+
+  it('a leg cut before its first send records no deferral in either', () => {
+    for (const walk of [
+      { ended: 'cancelled' as const, error: err('unavailable'), failures: [] },
+      {
+        ended: 'deadline' as const,
+        stopped: { index: 0, sent: false },
+        error: err('unavailable'),
+        failures: [],
+      },
+    ]) {
+      const { note, leg } = both(walk);
+      expect(note).toBeNull();
+      expect(leg.deferred).toBeUndefined();
+      expect(leg.clamps).toBeUndefined();
+      expect(leg.ask).toBeUndefined();
+    }
+  });
+
+  it('dispatchedIndexes: served, dispatched failures and a sent stopper; never a skip', () => {
+    expect([...dispatchedIndexes(2, [failed(0), failed(1, false)], undefined)].sort()).toEqual([
+      0, 2,
+    ]);
+    expect([...dispatchedIndexes(null, [], { index: 1, sent: true })]).toEqual([1]);
+    expect(dispatchedIndexes(null, [failed(0, false)], { index: 1, sent: false }).size).toBe(0);
   });
 });
 

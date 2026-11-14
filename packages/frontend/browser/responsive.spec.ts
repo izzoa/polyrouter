@@ -3145,6 +3145,122 @@ test.describe('the route trace in the inspector (add-route-trace-inspector 4.6)'
       expect(m.escapes, 'content escaping the inspector').toBe(0);
     });
   }
+
+  // record-route-legs (task 7.4; design Risks "Trace length"): the fixture's fifth to seventh rows
+  // carry a route record: an escalation with a deferral on each leg and two clamps, a cascade
+  // whose cheap leg a `policy_block` stopped, and an escalation cancelled while its member was in
+  // flight. In every presentation, each node's label wraps to at most two 16px lines, a clamp line
+  // under the served label is one line, the escalation row's `at <time>` is one line, every text
+  // block keeps its 32px gutter, and nothing leaves the inspector box. EXACT: a line is 16px.
+  const RECORD_ROWS = [
+    {
+      nth: 4,
+      texts: [
+        'Lobechat',
+        'router · cascade',
+        'cheap leg',
+        'deferred · gemma2-9b-it · lacks tools · output cap 8,192 < 100,000 asked',
+        'llama-3.1-8b-instant · no reply by the cheap deadline · output capped at 4,096',
+        'escalation · cheap deadline · at 30.02s',
+        'deferred · gpt-4o-mini · lacks vision',
+        'XiaomiMiMo · claude-sonnet-4-5-20250929 · served · 38.89s · output capped at 16,384 of 100,000 asked',
+      ],
+      time: 'at 30.02s',
+    },
+    {
+      nth: 5,
+      texts: [
+        'Lobechat',
+        'router · cascade',
+        'cheap leg',
+        'llama-3.1-8b-instant · rate_limit · HTTP 429',
+        'claude-3-5-haiku-latest · policy_block · HTTP 451',
+        'failed · 1.90s',
+      ],
+      time: null,
+    },
+    {
+      nth: 6,
+      texts: [
+        'Lobechat',
+        'router · cascade',
+        'cheap leg',
+        'llama-3.1-8b-instant · server_error · HTTP 503',
+        'escalation · cheap leg exhausted · at 2.45s',
+        'claude-3-5-sonnet-latest · in flight · output capped at 8,192',
+        'cancelled by client · 4.20s',
+      ],
+      time: 'at 2.45s',
+    },
+  ] as const;
+  for (const vp of [
+    { name: 'the 480px docked panel at 1440x900', width: 1440, height: 900 },
+    { name: 'the 440px drawer at 1025x768', width: 1025, height: 768 },
+    { name: 'the sheet at 320x568', width: 320, height: 568 },
+  ] as const) {
+    for (const row of RECORD_ROWS) {
+      test(`route-record row ${String(row.nth + 1)} reads in at most two lines a node, in ${vp.name}`, async ({
+        page,
+      }) => {
+        await page.setViewportSize({ width: vp.width, height: vp.height });
+        await open(page, '#/requests', '?trace=cascade');
+        await page.locator('button.req-row').nth(row.nth).click();
+        await page.waitForSelector('.drawer ol.rt > li[data-kind="outcome"]');
+        await page.waitForTimeout(250);
+        const m = await page.evaluate(() => {
+          const drawer = document.querySelector<HTMLElement>('.drawer')!.getBoundingClientRect();
+          const nodes = [
+            ...document.querySelectorAll<HTMLElement>('.drawer ol.rt > li.rt-node'),
+          ].map((li) => {
+            const text = li.querySelector<HTMLElement>('.rt-text')!;
+            const subs = [...text.querySelectorAll<HTMLElement>('.rt-sub')].map(
+              (s) => s.getBoundingClientRect().height,
+            );
+            // The label's own lines: the text block less each second line and its 4px gap.
+            const label = text.getBoundingClientRect().height - subs.reduce((a, h) => a + h + 4, 0);
+            const nowrap = [...text.querySelectorAll<HTMLElement>('.rt-nowrap')].map((n) => ({
+              text: (n.textContent ?? '').trim(),
+              lines: new Set([...n.getClientRects()].map((r) => Math.round(r.top))).size,
+            }));
+            return {
+              text: (li.textContent ?? '').replace(/\s+/g, ' ').trim(),
+              label,
+              subs,
+              nowrap,
+              offset: text.getBoundingClientRect().left - li.getBoundingClientRect().left,
+            };
+          });
+          const escapes = [...document.querySelectorAll<HTMLElement>('.drawer *')]
+            .filter((el) => {
+              const r = el.getBoundingClientRect();
+              if (r.width === 0 && r.height === 0) return false;
+              return r.left < drawer.left - 0.5 || r.right > drawer.right + 0.5;
+            })
+            .map((el) => `${el.className} "${(el.textContent ?? '').trim().slice(0, 40)}"`);
+          return { nodes, escapes };
+        });
+        expect(m.nodes.map((n) => n.text)).toEqual(row.texts);
+        for (const n of m.nodes) {
+          expect(n.label, `"${n.text}" wraps to at most two lines`).toBeLessThanOrEqual(
+            2 * 16 + 0.5,
+          );
+          for (const h of n.subs)
+            expect(h, `a second line of "${n.text}" is one line`).toBeCloseTo(16, 0);
+          expect(n.offset, `"${n.text}": text offset`).toBe(32);
+        }
+        // Not vacuous: at the sheet's 248px label column, a node of each row really wraps.
+        if (vp.width === 320)
+          expect(
+            m.nodes.some((n) => n.label > 16 + 1),
+            'a label wrapped at 320px',
+          ).toBe(true);
+        const times = m.nodes.flatMap((n) => n.nowrap);
+        expect(times.map((t) => t.text)).toEqual(row.time === null ? [] : [row.time]);
+        for (const t of times) expect(t.lines, `"${t.text}" is one line`).toBe(1);
+        expect(m.escapes, 'content escaping the inspector').toEqual([]);
+      });
+    }
+  }
 });
 
 /* ---- column priorities (add-docked-inspector tasks 6.2, 6.3; design D11, D12) ----

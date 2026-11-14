@@ -9,7 +9,7 @@ import { APP_FILTER } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { loadConfig } from '@polyrouter/shared';
+import { loadConfig, type AttemptFailureEntry, type RouteLeg } from '@polyrouter/shared';
 import {
   PERSISTENCE_PORT,
   REDIS_CLIENT,
@@ -70,7 +70,7 @@ import { SubscriptionOauthService } from '../../src/subscription-oauth/subscript
 
 const HMAC = 'a'.repeat(64);
 
-type Behavior = 'ok' | 'lenstop' | 'badreq' | 'ratelimit';
+type Behavior = 'ok' | 'lenstop' | 'badreq' | 'ratelimit' | 'legal';
 /** externalModelId → scripted upstream behavior. */
 const behaviorByModel: Record<string, Behavior> = {
   'ocap-16k': 'ok',
@@ -85,6 +85,11 @@ const behaviorByModel: Record<string, Behavior> = {
   'ocap-cheapfail1': 'ratelimit',
   'ocap-strong1': 'ok',
   'ocap-default': 'ok',
+  // record-route-legs: a capable head that fails retryably (so the deferred member
+  // rescues it, clamped), and an insufficient head that is legally denied (a clamped
+  // member that stops the walk).
+  'ocap-200kfail': 'ratelimit',
+  'ocap-4kstop': 'legal',
 };
 
 /** Every dispatched upstream call: the model, the maxOutputTokens the wire
@@ -102,6 +107,8 @@ function fakeAdapterFactory(config: ProviderConfig): ProviderAdapter {
     if (b === 'badreq')
       return Promise.reject(new ProviderError('bad_request', 'max_tokens too large'));
     if (b === 'ratelimit') return Promise.reject(new ProviderError('rate_limit', 'slow down'));
+    if (b === 'legal')
+      return Promise.reject(new ProviderError('policy_block', 'legal denial', { status: 451 }));
     return Promise.resolve({
       id: 'stub-1',
       model: req.model,
@@ -131,6 +138,8 @@ describe('output-cap guardrails e2e', () => {
   let key: string;
   let openaiProviderId: string;
   const modelId: Record<string, string> = {};
+  /** The `skip-t` members' own providers (record-route-legs). */
+  const skipProviderIds: string[] = [];
 
   async function setBand(matchType: 'auto_high' | 'auto_low', tierKey: string): Promise<void> {
     for (const r of (await port.routingRules.list(principal)).filter(
@@ -277,6 +286,27 @@ describe('output-cap guardrails e2e', () => {
     await add(anthropic.id, 'ocap-claude');
     await add(anthropic.id, 'nocap-claude');
     await add(sub.id, 'ocap-sub8k');
+    // record-route-legs fixtures, on a provider of their own: they fail on purpose, and
+    // a breaker is per provider, so they can never turn another test's call into a skip.
+    const failing = await port.providers.insert(principal, {
+      name: 'ocap-openai-failing',
+      kind: 'local',
+      protocol: 'openai_compatible',
+      baseUrl: 'https://api.openai.com',
+    });
+    await add(failing.id, 'ocap-200kfail');
+    await add(failing.id, 'ocap-4kstop');
+    // …and two members each on its own provider, whose breakers one test opens.
+    for (const ext of ['ocap-skip16k', 'ocap-skip200k']) {
+      const own = await port.providers.insert(principal, {
+        name: `${ext}-provider`,
+        kind: 'local',
+        protocol: 'openai_compatible',
+        baseUrl: 'https://api.openai.com',
+      });
+      skipProviderIds.push(own.id);
+      await add(own.id, ext);
+    }
     // honest-model-capabilities fixtures.
     for (const ext of ['ocap-blind', 'ocap-sees', 'ocap-blind2', 'ocap-notools', 'ocap-silent']) {
       await add(openai.id, ext);
@@ -303,6 +333,10 @@ describe('output-cap guardrails e2e', () => {
     await seedCap('openai:ocap-cheapfail1', 1);
     await seedCap('openai:ocap-strong1', 1);
     await seedCap('openai:ocap-default', 200_000);
+    await seedCap('openai:ocap-200kfail', 200_000);
+    await seedCap('openai:ocap-4kstop', 4_096);
+    await seedCap('openai:ocap-skip16k', 16_384);
+    await seedCap('openai:ocap-skip200k', 200_000);
 
     // Capability rows (honest-model-capabilities). `cap-silent` deliberately gets
     // NO row, so the ladder answers unknown for it and it can never defer.
@@ -351,6 +385,11 @@ describe('output-cap guardrails e2e', () => {
     await setTier('casc-cheap', ['ocap-cheap1']);
     await setTier('casc-cheapfail', ['ocap-cheapfail1']);
     await setTier('casc-strong', ['ocap-strong1']);
+    // record-route-legs: [A (cap 16384), B (cap 200000, fails 429)] → effective [B, A];
+    // and [A (cap 4096, legally denied), B (cap 16384)] → all-insufficient, configured order.
+    await setTier('rescue-t', ['ocap-16k', 'ocap-200kfail']);
+    await setTier('stop-t', ['ocap-4kstop', 'ocap-16k']);
+    await setTier('skip-t', ['ocap-skip16k', 'ocap-skip200k']);
     // honest-model-capabilities tiers: blind-first in every case, so a reorder is
     // the only way the capable member can serve.
     await setTier('cap-t', ['ocap-blind', 'ocap-sees']);
@@ -396,10 +435,18 @@ describe('output-cap guardrails e2e', () => {
     decisionLayer: string;
     routingReason: string;
     escalated: boolean | null;
+    durationMs: number;
+    attemptFailures: AttemptFailureEntry[] | null;
+    routeLegs: RouteLeg[] | null;
   }> => {
     const logs = await port.requestLogs.list(principal);
     return logs[logs.length - 1]! as never;
   };
+  /** One expected route-record leg (record-route-legs); any `endedMs` matches. */
+  const leg = (l: Omit<RouteLeg, 'endedMs'>): RouteLeg => ({
+    ...l,
+    endedMs: expect.any(Number) as number,
+  });
   const msg = { messages: [{ role: 'user', content: 'hello' }] };
 
   // --- 5.1: deferral, clamp order, fence, unknown, no-ask, Anthropic default ---
@@ -428,13 +475,53 @@ describe('output-cap guardrails e2e', () => {
     expect(row.status).toBe('success'); // a deferral is not a failure
     expect(row.routingReason).toContain('capability_deferred ocap-blind(vision)');
     expect(row.routingReason).not.toContain('fell back'); // the trail stays empty
+    // record-route-legs: the same deferral, as structure — the member's effective index,
+    // its model and the capability it lacks; a capability-only deferral records no ask.
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'primary',
+        end: 'served',
+        servedIndex: 0,
+        deferred: [
+          { index: 1, model: 'ocap-blind', reason: 'capability', capabilities: ['vision'] },
+        ],
+      }),
+    ]);
+    expect(row.attemptFailures).toBeNull(); // a deferral never enters the trail
+    // The reason is byte-identical to before: the record rides beside it, never in it.
+    expect(row.routingReason).toBe('explicit tier cap-t; capability_deferred ocap-blind(vision)');
+  });
+
+  // record-route-legs (request-logging "Deferrals, clamps and the ask are recorded per
+  // leg"): the ask rides a leg exactly when an output-cap fact does. Here the request
+  // asks for output, but neither member's cap is known, so the only fact is the
+  // capability deferral — and the record carries no ask.
+  it('a capability-only deferral records no ask, even when the request asks for output', async () => {
+    const res = await chat({ model: 'cap-t', max_completion_tokens: 1_000, ...visionMsg });
+    expect(res.status).toBe(200);
+    expect(dispatched).toEqual([{ model: 'ocap-sees', ask: 1_000, defaultMax: 4096 }]);
+    const row = await lastLog();
+    expect(row.routingReason).toBe('explicit tier cap-t; capability_deferred ocap-blind(vision)');
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'primary',
+        end: 'served',
+        servedIndex: 0,
+        deferred: [
+          { index: 1, model: 'ocap-blind', reason: 'capability', capabilities: ['vision'] },
+        ],
+      }),
+    ]);
   });
 
   it('routes a text-only request byte-identically — no demand, no reorder', async () => {
     const res = await chat({ model: 'cap-t', ...msg });
     expect(res.status).toBe(200);
     expect(dispatched.map((d) => d.model)).toEqual(['ocap-blind']); // configured order
-    expect((await lastLog()).routingReason).not.toContain('capability_deferred');
+    const row = await lastLog();
+    expect(row.routingReason).not.toContain('capability_deferred');
+    // record-route-legs: no demand, no deferral — the record carries none either.
+    expect(row.routeLegs).toEqual([leg({ leg: 'primary', end: 'served', servedIndex: 0 })]);
   });
 
   it('leaves an UNKNOWN model in place — silence is not a denial', async () => {
@@ -462,7 +549,21 @@ describe('output-cap guardrails e2e', () => {
     });
     expect(res.status).toBe(200);
     expect(dispatched.map((d) => d.model)).toEqual(['ocap-sees']);
-    expect((await lastLog()).routingReason).toContain('capability_deferred ocap-notools(tools)');
+    const row = await lastLog();
+    expect(row.routingReason).toContain('capability_deferred ocap-notools(tools)');
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'primary',
+        end: 'served',
+        servedIndex: 0,
+        deferred: [
+          { index: 1, model: 'ocap-notools', reason: 'capability', capabilities: ['tools'] },
+        ],
+      }),
+    ]);
+    expect(row.routingReason).toBe(
+      'explicit tier cap-tools; capability_deferred ocap-notools(tools)',
+    );
   });
 
   it('client-named fence: a named model is dispatched unchanged, capability notwithstanding', async () => {
@@ -483,6 +584,21 @@ describe('output-cap guardrails e2e', () => {
     expect(row.status).toBe('success'); // a deferral is not a failure
     expect(row.routingReason).toContain('output_cap_deferred ocap-16k(16384<100000)');
     expect(row.routingReason).not.toContain('fell back'); // empty trail
+    // record-route-legs: the deferral as structure, with the ask; no clamp, because the
+    // deferred member was never dispatched.
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'primary',
+        end: 'served',
+        servedIndex: 0,
+        ask: 100_000,
+        deferred: [{ index: 1, model: 'ocap-16k', reason: 'output_cap', cap: 16_384 }],
+      }),
+    ]);
+    // The reason is byte-identical to before: the record rides beside it, never in it.
+    expect(row.routingReason).toBe(
+      'explicit tier defer-t; output_cap_deferred ocap-16k(16384<100000)',
+    );
   });
 
   it('an all-insufficient tier serves clamped in CONFIGURED order with an honest length finish', async () => {
@@ -495,6 +611,116 @@ describe('output-cap guardrails e2e', () => {
     expect(row.status).toBe('success');
     expect(row.routingReason).toContain('output_cap_clamped 100000→4096 (ocap-4k)');
     expect(row.routingReason).not.toContain('output_cap_deferred'); // empty head = clamps only
+    // record-route-legs: the clamp as structure, with the ask; no deferral.
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'primary',
+        end: 'served',
+        servedIndex: 0,
+        ask: 100_000,
+        clamps: [{ index: 0, model: 'ocap-4k', to: 4_096 }],
+      }),
+    ]);
+    expect(row.routingReason).toBe(
+      'explicit tier allins-t; output_cap_clamped 100000→4096 (ocap-4k)',
+    );
+  });
+
+  // record-route-legs (fallback-routing "A deferral and a clamp are recorded as structure
+  // beside the reason"): [A (cap 16384), B (cap 200000)], ask 100000 → effective
+  // [B, A-clamped]; B fails retryably and A serves clamped. One row carries both facts.
+  it('a deferred member that rescues the head records its deferral, its clamp and the ask', async () => {
+    const res = await chat({ model: 'rescue-t', max_completion_tokens: 100_000, ...msg });
+    expect(res.status).toBe(200);
+    expect(dispatched).toEqual([
+      { model: 'ocap-200kfail', ask: 100_000, defaultMax: 4096 },
+      { model: 'ocap-16k', ask: 16_384, defaultMax: 4096 },
+    ]);
+    const row = await lastLog();
+    expect(row.status).toBe('fallback');
+    expect(row.modelId).toBe(modelId['ocap-16k']);
+    expect(row.routingReason).toContain('output_cap_deferred ocap-16k(16384<100000)');
+    expect(row.routingReason).toContain('output_cap_clamped 100000→16384 (ocap-16k)');
+    expect(row.routingReason).toBe(
+      'explicit tier rescue-t; fell back after: rate_limit@ocap-200kfail; ' +
+        'output_cap_deferred ocap-16k(16384<100000); output_cap_clamped 100000→16384 (ocap-16k)',
+    );
+    // The same index space as the trail: B's failure at 0, A's deferral and clamp at 1.
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'primary',
+        end: 'served',
+        servedIndex: 1,
+        ask: 100_000,
+        deferred: [{ index: 1, model: 'ocap-16k', reason: 'output_cap', cap: 16_384 }],
+        clamps: [{ index: 1, model: 'ocap-16k', to: 16_384 }],
+      }),
+    ]);
+    // Neither enters the failure trail: B's retryable failure is its only entry.
+    expect(row.attemptFailures).toHaveLength(1);
+    expect(row.attemptFailures![0]).toMatchObject({
+      index: 0,
+      model: 'ocap-200kfail',
+      kind: 'rate_limit',
+      dispatched: true,
+    });
+  });
+
+  // record-route-legs (fallback-routing "A clamped member that stopped the walk records
+  // its clamp"): the one deliberate reason-string change on these rows — before this
+  // change a sent stopper's clamp was missing from the capacity note (an accepted
+  // under-record); the note and the record now read one dispatched set.
+  it('a clamped member that stops the walk records its clamp in the reason and the record', async () => {
+    const res = await chat({ model: 'stop-t', max_completion_tokens: 100_000, ...msg });
+    expect(res.status).toBe(451);
+    expect(dispatched).toEqual([{ model: 'ocap-4kstop', ask: 4_096, defaultMax: 4096 }]); // B never reached
+    const row = await lastLog();
+    expect(row.status).toBe('error');
+    expect(row.modelId).toBe(modelId['ocap-4kstop']);
+    expect(row.routingReason).toContain('output_cap_clamped 100000→4096 (ocap-4kstop)');
+    expect(row.routingReason).not.toContain('ocap-16k'); // never reached: no clamp in either
+    expect(row.routingReason).toBe(
+      'explicit tier stop-t; output_cap_clamped 100000→4096 (ocap-4kstop)',
+    );
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'primary',
+        end: 'stopped',
+        stopped: { index: 0, model: 'ocap-4kstop', sent: true, kind: 'policy_block', status: 451 },
+        ask: 100_000,
+        clamps: [{ index: 0, model: 'ocap-4kstop', to: 4_096 }],
+      }),
+    ]);
+    expect(row.attemptFailures).toBeNull(); // a non-retryable stop never enters the trail
+  });
+
+  // record-route-legs (fallback-routing "A leg whose every member was skipped records no
+  // deferral"): [A (cap 16384), B (cap 200000)], ask 100000, both providers' breakers
+  // open. The chain dispatched nothing, so it contributes no deferral — a reason-string
+  // change: before this change the note named A's deferral on a walk that sent nothing.
+  it('a leg whose every member was skipped records no deferral, in the reason or the record', async () => {
+    const breaker = app.get<CircuitBreaker>(PROXY_BREAKER);
+    for (const providerId of skipProviderIds) {
+      for (let i = 0; i < 5; i += 1) {
+        const { token } = await breaker.before(providerId);
+        await breaker.complete(token, 'trip');
+      }
+    }
+    const res = await chat({ model: 'skip-t', max_completion_tokens: 100_000, ...msg });
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(dispatched).toEqual([]); // nothing reached an adapter
+    const row = await lastLog();
+    expect(row.status).toBe('error');
+    expect(row.routingReason).toBe(
+      'explicit tier skip-t; fell back after: skip@ocap-skip200k, skip@ocap-skip16k',
+    );
+    expect(row.routeLegs).toEqual([leg({ leg: 'primary', end: 'exhausted' })]); // no ask either
+    // The trail still holds both skipped members, never dispatched, in effective order.
+    expect(row.attemptFailures).toHaveLength(2);
+    expect(row.attemptFailures!.map((e) => [e.index, e.model, e.dispatched])).toEqual([
+      [0, 'ocap-skip200k', false],
+      [1, 'ocap-skip16k', false],
+    ]);
   });
 
   it('client-named fence: the value reaches the provider verbatim and a rejection surfaces sanitized', async () => {
@@ -521,7 +747,10 @@ describe('output-cap guardrails e2e', () => {
   it('an all-unknown chain and a no-ask request route byte-identically to today', async () => {
     await chat({ model: 'unknown-t', max_completion_tokens: 100_000, ...msg });
     expect(dispatched).toEqual([{ model: 'nocap-a', ask: 100_000, defaultMax: 4096 }]); // verbatim
-    expect((await lastLog()).routingReason).not.toContain('output_cap');
+    const unknown = await lastLog();
+    expect(unknown.routingReason).not.toContain('output_cap');
+    // record-route-legs: no output-cap fact, so no ask, deferral or clamp is recorded.
+    expect(unknown.routeLegs).toEqual([leg({ leg: 'primary', end: 'served', servedIndex: 0 })]);
 
     dispatched.length = 0;
     await chat({ model: 'defer-t', ...msg }); // no ask → configured order, no planning
@@ -544,8 +773,19 @@ describe('output-cap guardrails e2e', () => {
     const res = await chat({ model: 'sub-allins', max_completion_tokens: 100_000, ...msg });
     expect(res.status).toBe(200);
     expect(dispatched).toEqual([{ model: 'ocap-sub8k', ask: 8_192, defaultMax: 4096 }]);
-    expect((await lastLog()).routingReason).toContain(
-      'output_cap_clamped 100000→8192 (ocap-sub8k)',
+    const row = await lastLog();
+    expect(row.routingReason).toContain('output_cap_clamped 100000→8192 (ocap-sub8k)');
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'primary',
+        end: 'served',
+        servedIndex: 0,
+        ask: 100_000,
+        clamps: [{ index: 0, model: 'ocap-sub8k', to: 8_192 }],
+      }),
+    ]);
+    expect(row.routingReason).toBe(
+      'explicit tier sub-allins; output_cap_clamped 100000→8192 (ocap-sub8k)',
     );
   });
 
@@ -553,8 +793,19 @@ describe('output-cap guardrails e2e', () => {
     const res = await chat({ model: 'sub-defer', max_completion_tokens: 100_000, ...msg });
     expect(res.status).toBe(200);
     expect(dispatched).toEqual([{ model: 'ocap-200k', ask: 100_000, defaultMax: 4096 }]);
-    expect((await lastLog()).routingReason).toContain(
-      'output_cap_deferred ocap-sub8k(8192<100000)',
+    const row = await lastLog();
+    expect(row.routingReason).toContain('output_cap_deferred ocap-sub8k(8192<100000)');
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'primary',
+        end: 'served',
+        servedIndex: 0,
+        ask: 100_000,
+        deferred: [{ index: 1, model: 'ocap-sub8k', reason: 'output_cap', cap: 8_192 }],
+      }),
+    ]);
+    expect(row.routingReason).toBe(
+      'explicit tier sub-defer; output_cap_deferred ocap-sub8k(8192<100000)',
     );
   });
 
@@ -591,6 +842,20 @@ describe('output-cap guardrails e2e', () => {
     expect(row.escalated).toBe(false); // length-only truncation scores 0.5 — served at the default threshold
     expect(row.routingReason).toContain('cheap[output_cap_clamped 2→1 (ocap-cheap1)]');
     expect(row.routingReason).not.toContain('esc['); // the never-walked escalation contributes nothing
+    // record-route-legs: the kept cheap leg carries its clamp and the ask; no escalation leg.
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'cheap',
+        end: 'served',
+        servedIndex: 0,
+        ask: 2,
+        clamps: [{ index: 0, model: 'ocap-cheap1', to: 1 }],
+      }),
+    ]);
+    // Byte-identical up to the quality marker (the structural features follow it).
+    expect(row.routingReason.split(' (q=')[0]).toBe(
+      'cascade: cheap served; cheap[output_cap_clamped 2→1 (ocap-cheap1)]',
+    );
   });
 
   it('escalation plans the CONCATENATED chain: the capable default precedes the insufficient strong, and the superseded cheap clamp stays on the record', async () => {
@@ -608,6 +873,29 @@ describe('output-cap guardrails e2e', () => {
     expect(row.modelId).toBe(modelId['ocap-default']);
     expect(row.routingReason).toContain('cheap[output_cap_clamped 2→1 (ocap-cheapfail1)]'); // superseded, kept
     expect(row.routingReason).toContain('esc[output_cap_deferred ocap-strong1(1<2)]');
+    // Byte-identical up to the quality marker (the structural features follow it).
+    expect(row.routingReason.split(' (q=')[0]).toBe(
+      'cascade: escalated cheap→default; cheap[output_cap_clamped 2→1 (ocap-cheapfail1)]; ' +
+        'esc[output_cap_deferred ocap-strong1(1<2)]',
+    );
+    // record-route-legs: each leg's facts on its own leg, in the leg's effective order —
+    // the exhausted cheap leg's clamp, then the escalation leg's deferral of the strong
+    // member behind the capable default (never dispatched, so no clamp for it).
+    expect(row.routeLegs).toEqual([
+      leg({
+        leg: 'cheap',
+        end: 'exhausted',
+        ask: 2,
+        clamps: [{ index: 0, model: 'ocap-cheapfail1', to: 1 }],
+      }),
+      leg({
+        leg: 'escalation',
+        end: 'served',
+        servedIndex: 0,
+        ask: 2,
+        deferred: [{ index: 1, model: 'ocap-strong1', reason: 'output_cap', cap: 1 }],
+      }),
+    ]);
   });
 
   // --- add-workload-routing: a workload claim is planned like any other head ---
@@ -644,6 +932,16 @@ describe('output-cap guardrails e2e', () => {
         expect(row.status).toBe('success');
         expect(row.routingReason).toMatch(/^workload:code/);
         expect(row.routingReason).toContain('output_cap_deferred ocap-16k(16384<100000)');
+        // record-route-legs: a workload-routed row records its walk like any other.
+        expect(row.routeLegs).toEqual([
+          leg({
+            leg: 'primary',
+            end: 'served',
+            servedIndex: 0,
+            ask: 100_000,
+            deferred: [{ index: 1, model: 'ocap-16k', reason: 'output_cap', cap: 16_384 }],
+          }),
+        ]);
       });
     });
 

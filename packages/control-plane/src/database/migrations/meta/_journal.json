@@ -337,6 +337,13 @@
       "when": 1794340676714,
       "tag": "0047_steady_starbolt",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1794602703524,
+      "tag": "0048_productive_scarlet_witch",
+      "breakpoints": true
     }
   ]
 }

@@ -14,7 +14,20 @@ import {
   type Span,
   type SpanContext,
 } from '@opentelemetry/api';
-import type { AttemptFailureEntry } from '@polyrouter/shared';
+import {
+  ROUTE_CAPABILITIES,
+  ROUTE_LEG_ENDS,
+  ROUTE_LEG_LIST_MAX,
+  ROUTE_LEG_NAMES,
+  ROUTE_LEGS_MAX,
+  type AttemptFailureEntry,
+  type RouteCapability,
+  type RouteClamp,
+  type RouteDeferral,
+  type RouteLeg,
+  type RouteLegEnd,
+  type RouteStopper,
+} from '@polyrouter/shared';
 import {
   PERSISTENCE_PORT,
   encryptSecret,
@@ -25,6 +38,7 @@ import {
   type RequestAttemptInsertInput,
 } from '@polyrouter/shared/server';
 import {
+  PROVIDER_ERROR_KINDS,
   computeCost,
   sanitizeRequestId,
   scrubSecrets,
@@ -130,10 +144,16 @@ export interface RequestLogDraft {
     readonly markers?: readonly string[];
   };
   /** Per-attempt failure metadata (add-fallback-attempt-detail) — present on
-   * `status='error'` AND `status='fallback'` drafts (fix-bad-request-dead-end: the
-   * trail follows the WALK, not the terminal outcome; the recorder enforces that
-   * split), and on an escalated `success` draft (keep-cheap-leg-attempt-trail). Structure only: the entry shape admits no free-text field. */
+   * `error`, `fallback` and `cancelled` drafts (fix-bad-request-dead-end: the trail
+   * follows the WALK, not the terminal outcome; record-route-legs D6: a cancel keeps
+   * the members walked before the client left) and on an escalated `success` draft
+   * (keep-cheap-leg-attempt-trail); the recorder enforces that split. Structure
+   * only: the entry shape admits no free-text field. */
   readonly attemptFailures?: readonly AttemptFailureEntry[];
+  /** The route record (record-route-legs) — present on any status when a chain walk
+   * settled the row. The writer REBUILDS it through `routeLegsColumn` before the
+   * insert, so a malformed record is narrowed or nulled and never fails the batch. */
+  readonly routeLegs?: readonly RouteLeg[];
   /** The originating request's span context (#21 `recording.write` link);
    * absent when tracing is off. Never persisted. */
   readonly spanContext?: SpanContext;
@@ -220,6 +240,167 @@ function errorColumns(d: { readonly error?: RequestLogDraft['error'] }): {
     ...(requestId !== undefined ? { errorRequestId: requestId } : {}),
     ...(markers.length > 0 ? { errorMarkers: markers } : {}),
   };
+}
+
+// --- The route record, rebuilt (record-route-legs design D6) ---
+//
+// `route_legs` has no CHECK (a violation would drop the owner's whole insert batch),
+// so the writer is its gate: it REBUILDS the value from the D2 allowlist and never
+// copies the draft's object. A leg that breaks a rule is dropped; a sequence that
+// breaks the execution order is nulled; an empty result is null. It never throws and
+// never logs a value (invariant 8), and the proxy, which builds the record from the
+// walk, never produces what it rejects.
+
+/** A Unicode control character — Postgres `jsonb` cannot store `\u0000` at all. */
+const CONTROL_CHAR = /\p{Cc}/u;
+/** A lone UTF-16 surrogate: `jsonb` rejects its `\ud800`-style escape, so it would
+ * fail the insert like a control character. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const ROUTE_MODEL_MAX = 256;
+/** The ends whose leg produced an answer, and so carry `servedIndex`. */
+const SERVED_ENDS: ReadonlySet<RouteLegEnd> = new Set(['served', 'gate_failed', 'replay_failed']);
+/** The ends that can name the member being attempted (`stopped`). */
+const STOPPER_ENDS: ReadonlySet<RouteLegEnd> = new Set(['stopped', 'deadline', 'cancelled']);
+/** The ends only a cheap leg can have (the quality gate and the replay). */
+const CHEAP_ONLY_ENDS: ReadonlySet<RouteLegEnd> = new Set(['gate_failed', 'replay_failed']);
+/** The executed-leg sequences a walk can produce. */
+const ROUTE_LEG_SEQUENCES: ReadonlySet<string> = new Set(['primary', 'cheap', 'cheap,escalation']);
+
+type UnknownRecord = Readonly<Record<string, unknown>>;
+
+const isRecord = (v: unknown): v is UnknownRecord =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+/** A non-negative integer (index, `endedMs`, `ask`, `cap`, `to`). */
+const isCount = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+const isOneOf = <T extends string>(list: readonly T[], v: unknown): v is T =>
+  typeof v === 'string' && (list as readonly string[]).includes(v);
+/** An external model id: 1–256 characters, no control character, well-formed UTF-16. */
+const isModel = (v: unknown): v is string =>
+  typeof v === 'string' &&
+  v.length > 0 &&
+  v.length <= ROUTE_MODEL_MAX * 2 &&
+  [...v].length <= ROUTE_MODEL_MAX &&
+  !CONTROL_CHAR.test(v) &&
+  !LONE_SURROGATE.test(v);
+const isHttpStatus = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= 100 && v <= 599;
+
+/** The leg's stopper, or null when malformed for this end: `kind` (a provider-error
+ * taxonomy value) is required on a `stopped` end and forbidden on every other, and
+ * `status` is an HTTP status allowed on a `stopped` end only. */
+function routeStopperOf(v: unknown, end: RouteLegEnd): RouteStopper | null {
+  if (!isRecord(v)) return null;
+  const { index, model, sent, kind, status } = v;
+  if (!isCount(index) || !isModel(model) || typeof sent !== 'boolean') return null;
+  if (end !== 'stopped') {
+    return kind === undefined && status === undefined ? { index, model, sent } : null;
+  }
+  if (!isOneOf(PROVIDER_ERROR_KINDS, kind)) return null;
+  if (status !== undefined && !isHttpStatus(status)) return null;
+  return { index, model, sent, kind, ...(status !== undefined ? { status } : {}) };
+}
+
+function routeDeferralOf(v: unknown): RouteDeferral | null {
+  if (!isRecord(v)) return null;
+  const { index, model, reason, cap, capabilities } = v;
+  if (!isCount(index) || !isModel(model)) return null;
+  if (reason === 'output_cap') {
+    return isCount(cap) ? { index, model, reason, cap } : null;
+  }
+  if (reason !== 'capability' || !Array.isArray(capabilities)) return null;
+  const listed: readonly unknown[] = capabilities;
+  const kept: RouteCapability[] = [];
+  for (const c of listed) {
+    if (!isOneOf(ROUTE_CAPABILITIES, c) || kept.includes(c)) return null;
+    kept.push(c);
+  }
+  return kept.length > 0 ? { index, model, reason, capabilities: kept } : null;
+}
+
+function routeClampOf(v: unknown): RouteClamp | null {
+  if (!isRecord(v)) return null;
+  const { index, model, to } = v;
+  return isCount(index) && isModel(model) && isCount(to) ? { index, model, to } : null;
+}
+
+/** A list field, truncated at `ROUTE_LEG_LIST_MAX`; null when it is not a list or
+ * any kept entry is malformed (the leg is then malformed). Absent reads as empty. */
+function routeListOf<T>(v: unknown, entry: (raw: unknown) => T | null): T[] | null {
+  if (v === undefined) return [];
+  if (!Array.isArray(v)) return null;
+  const items: readonly unknown[] = v;
+  const out: T[] = [];
+  for (const raw of items.slice(0, ROUTE_LEG_LIST_MAX)) {
+    const kept = entry(raw);
+    if (kept === null) return null;
+    out.push(kept);
+  }
+  return out;
+}
+
+/** One leg rebuilt from the allowlist, or null when it breaks a rule of its own end:
+ * `servedIndex` exactly on `served`/`gate_failed`/`replay_failed`; `stopped` only on
+ * `stopped`/`deadline`/`cancelled` (always on `stopped`); `gate_failed`/`replay_failed`
+ * only on a cheap leg. `ask` is kept only beside an output-cap deferral or a clamp, and an
+ * output-cap deferral or a clamp without its `ask` drops the leg (the record states the cap
+ * against the ask; record-route-legs, codex review). */
+function routeLegOf(v: unknown): RouteLeg | null {
+  if (!isRecord(v)) return null;
+  const { leg, end, endedMs, servedIndex, stopped: rawStopped, ask } = v;
+  if (!isOneOf(ROUTE_LEG_NAMES, leg) || !isOneOf(ROUTE_LEG_ENDS, end) || !isCount(endedMs)) {
+    return null;
+  }
+  if (CHEAP_ONLY_ENDS.has(end) && leg !== 'cheap') return null;
+  if (SERVED_ENDS.has(end) ? !isCount(servedIndex) : servedIndex !== undefined) return null;
+  let stopped: RouteStopper | null = null;
+  if (rawStopped !== undefined) {
+    if (!STOPPER_ENDS.has(end)) return null;
+    stopped = routeStopperOf(rawStopped, end);
+    if (stopped === null) return null;
+  } else if (end === 'stopped') {
+    return null;
+  }
+  if (ask !== undefined && !isCount(ask)) return null;
+  const deferred = routeListOf(v.deferred, routeDeferralOf);
+  const clamps = routeListOf(v.clamps, routeClampOf);
+  if (deferred === null || clamps === null) return null;
+  const outputCapFact = clamps.length > 0 || deferred.some((d) => d.reason === 'output_cap');
+  if (outputCapFact && !isCount(ask)) return null;
+  return {
+    leg,
+    end,
+    endedMs,
+    ...(isCount(servedIndex) ? { servedIndex } : {}),
+    ...(stopped !== null ? { stopped } : {}),
+    ...(isCount(ask) && outputCapFact ? { ask } : {}),
+    ...(deferred.length > 0 ? { deferred } : {}),
+    ...(clamps.length > 0 ? { clamps } : {}),
+  };
+}
+
+/**
+ * The `route_legs` column value for a draft's route record (record-route-legs design
+ * D6): every leg rebuilt from the allowlist, malformed legs dropped, at most
+ * `ROUTE_LEGS_MAX` kept, and the result's leg sequence one a walk can produce
+ * (`[primary]`, `[cheap]` or `[cheap, escalation]`) — otherwise, or when nothing
+ * remains, null. Like `error_markers`, it can never fail an insert: it never throws.
+ */
+export function routeLegsColumn(value: unknown): RouteLeg[] | null {
+  try {
+    if (!Array.isArray(value)) return null;
+    const items: readonly unknown[] = value;
+    const legs: RouteLeg[] = [];
+    for (const raw of items) {
+      if (legs.length === ROUTE_LEGS_MAX) break;
+      const leg = routeLegOf(raw);
+      if (leg !== null) legs.push(leg);
+    }
+    if (legs.length === 0) return null;
+    return ROUTE_LEG_SEQUENCES.has(legs.map((l) => l.leg).join(',')) ? legs : null;
+  } catch {
+    return null; // a hostile getter or proxy object: the row still inserts, without a record
+  }
 }
 
 /** Reject after `ms` if `op` hasn't settled. The underlying DB call keeps running
@@ -540,6 +721,7 @@ export class LogWriter implements OnModuleInit, OnApplicationShutdown {
       workloadSource: d.workloadSource ?? null,
       workloadRevision: d.workloadRevision ?? null,
       attemptFailures: d.attemptFailures !== undefined ? [...d.attemptFailures] : null,
+      routeLegs: routeLegsColumn(d.routeLegs),
       ...errorColumns(d),
     };
   }

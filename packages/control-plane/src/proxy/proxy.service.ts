@@ -2,7 +2,17 @@ import type { AgentCalibrationAttachment } from '../auth/agent-key.guard';
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
-import { ATTEMPT_FAILURES_MAX, type AttemptFailureEntry } from '@polyrouter/shared';
+import {
+  ATTEMPT_FAILURES_MAX,
+  ROUTE_CAPABILITIES,
+  type AttemptFailureEntry,
+  type RouteCapability,
+  type RouteClamp,
+  type RouteDeferral,
+  type RouteLeg,
+  type RouteLegEnd,
+  type RouteLegName,
+} from '@polyrouter/shared';
 import {
   AUTO_ALIAS,
   PERSISTENCE_PORT,
@@ -48,6 +58,8 @@ import {
   type RoutingSnapshot,
   type StructuralVerdict,
   type SemanticWorkloadVerdict,
+  type WalkEnd,
+  type WalkStopper,
   type WorkloadVerdict,
 } from '@polyrouter/data-plane';
 import {
@@ -148,10 +160,22 @@ interface Bundle {
 
 /** Per-walked-chain capacity annotations (add-output-cap-guardrails): the
  * plan-time deferral string plus a clamp string per EFFECTIVE attempt index.
- * Clamps are recorded only for attempts actually dispatched (`capacitySuffix`). */
-interface CapacityAnnotations {
+ * Clamps are recorded only for attempts actually dispatched (`capacitySuffix`).
+ *
+ * The same facts ride as structure beside the strings (record-route-legs design
+ * D5), so the route record and the reason are built from one plan: the request's
+ * ask, every deferral by effective index, and every clamp's cap by effective
+ * index. The strings are unchanged by it. */
+export interface CapacityAnnotations {
   readonly deferred: string | null;
   readonly clampByIndex: ReadonlyMap<number, string>;
+  /** The request's participating output ask, or null when it had none. */
+  readonly ask: number | null;
+  /** The deferrals `deferred` renders, by effective index (a member deferred for
+   * both reasons appears twice, capability first). */
+  readonly deferredList: readonly RouteDeferral[];
+  /** The cap each clamped member is sent with, by effective index. */
+  readonly clampTo: ReadonlyMap<number, number>;
 }
 
 /** What the catalog KNOWS about a chain member, at its EXACT key
@@ -442,16 +466,17 @@ export class ProxyService {
       },
       signal,
     );
+    const endedMs = legEndedMs(p.startedAt); // record-route-legs D4: at the walker's return
     if (result.ok) {
       if (p.capture !== undefined) p.capture.buffered = result.response.content;
-      this.recorder.record(this.servedContext(p, result.servedIndex, result.failures), {
+      this.recorder.record(this.servedContext(p, result, endedMs), {
         status: result.failures.length > 0 ? 'fallback' : 'success',
         ...(result.response.usage !== undefined ? { providerUsage: result.response.usage } : {}),
         outputChars: countOutputChars(result.response.content),
       });
       return result.wire;
     }
-    this.recorder.record(this.failedContext(p, result.failures, result.error), {
+    this.recorder.record(this.failedContext(p, result, endedMs), {
       status: result.callerAborted ? 'cancelled' : 'error',
       outputChars: 0,
       error: recordedError(result.error),
@@ -506,8 +531,10 @@ export class ProxyService {
       isCallerAbort: () => signal.aborted,
       ...(p.capture !== undefined ? { contentCollector: p.capture.collector } : {}),
     });
+    // record-route-legs D4: a streamed leg's instant is its commit or its give-up.
+    const endedMs = legEndedMs(p.startedAt);
     if (result.kind === 'error') {
-      this.recorder.record(this.failedContext(p, result.failures, result.error), {
+      this.recorder.record(this.failedContext(p, result, endedMs), {
         status: result.callerAborted ? 'cancelled' : 'error',
         outputChars: 0,
         error: recordedError(result.error),
@@ -516,7 +543,7 @@ export class ProxyService {
       if (!result.callerAborted) this.notifyFailed(p.principal);
       throw providerErrorToProxy(result.error);
     }
-    const ctx = this.servedContext(p, result.servedIndex, result.failures);
+    const ctx = this.servedContext(p, result, endedMs);
     const fellBack = result.failures.length > 0;
     void result.outcome.then((o) => {
       this.recorder.record(ctx, {
@@ -623,6 +650,7 @@ export class ProxyService {
       },
       AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
     );
+    const cheapEndedMs = legEndedMs(p.startedAt); // record-route-legs D4: at the walker's return
     if (cheap.ok) {
       const { score, escalate } = this.cascade.shouldEscalate(cheap.response, p.structuredDemand);
       if (!escalate) {
@@ -643,6 +671,7 @@ export class ProxyService {
               null,
             ),
             c.scope,
+            routeLegsOf([this.cheapLegFacts(p, c, cheap, cheapEndedMs)]),
           ),
           {
             status: cheap.failures.length > 0 ? 'fallback' : 'success',
@@ -659,7 +688,6 @@ export class ProxyService {
         c,
         { response: cheap.response, servedIndex: cheap.servedIndex },
         score,
-        'quality_gate',
         signal,
         // The EXECUTED cheap chain's capacity reasons ride the parent row even
         // when escalation supersedes it (a superseded clamp stays on record).
@@ -668,6 +696,8 @@ export class ProxyService {
         // escalation on the parent trail (add-fallback-attempt-detail).
         cheap.failures,
         chainBillingEvidence(cheap),
+        // The gate judged the answer bad: `gate_failed`, recorded `quality_gate`.
+        this.cheapLegFacts(p, c, cheap, cheapEndedMs, 'gate_failed'),
       );
     }
     if (cheap.callerAborted) {
@@ -681,15 +711,18 @@ export class ProxyService {
           0,
           withCapacity(
             'cascade: client disconnected during cheap attempt',
-            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures, cheap.stopped),
           ),
           null,
           cheap.failures,
+          // The members walked before the client left (record-route-legs D6); the
+          // member in flight did not fail, so it is the route record's `stopped`.
           attemptTrailEntries(
             [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
             null,
           ),
           c.scope,
+          routeLegsOf([this.cheapLegFacts(p, c, cheap, cheapEndedMs)]),
         ),
         cheapCancelOutcome(cheap),
       );
@@ -708,7 +741,7 @@ export class ProxyService {
           0,
           withCapacity(
             `cascade: cheap failed non-retryably (${cheap.error.kind})`,
-            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures, cheap.stopped),
           ),
           null,
           cheap.failures,
@@ -719,6 +752,7 @@ export class ProxyService {
             cheap.error,
           ),
           c.scope,
+          routeLegsOf([this.cheapLegFacts(p, c, cheap, cheapEndedMs)]),
         ),
         {
           status: 'error',
@@ -735,17 +769,18 @@ export class ProxyService {
       );
       throw toProxyError(cheap.error);
     }
-    // Cheap failed/timed out — provider fault, never quality evidence.
+    // Cheap failed/timed out — provider fault, never quality evidence: the cheap
+    // leg's own end (`exhausted`, `deadline` or `stopped`), recorded `cheap_error`.
     return this.escalateBuffered(
       p,
       c,
       null,
       0,
-      'cheap_error',
       signal,
-      capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+      capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures, cheap.stopped),
       cheap.failures,
       chainBillingEvidence(cheap),
+      this.cheapLegFacts(p, c, cheap, cheapEndedMs),
     );
   }
 
@@ -754,7 +789,6 @@ export class ProxyService {
     c: CascadeBundle,
     cheapServed: CheapServed | null,
     score: number | null,
-    source: 'quality_gate' | 'cheap_error',
     signal: AbortSignal,
     cheapCapacity: string | null,
     /** The executed cheap leg's pre-commit failures (add-fallback-attempt-
@@ -765,7 +799,11 @@ export class ProxyService {
      * and was superseded contributes only its pre-serve failures — it has its own
      * request_attempt row, and the parent row concerns the attempts that failed. */
     cheapBilling: readonly AttemptBilling[],
+    /** The executed cheap leg's route facts (record-route-legs): the record's first
+     * leg, and — through `escalationSourceOf` — the row's `escalation_source`. */
+    cheapLeg: RouteLegFacts,
   ): Promise<unknown> {
+    const source = escalationSourceOf(cheapLeg);
     // add-stream-keepalive: the live row now names the strong tier, before its walk.
     p.onEscalate?.(c.escalation.meta[0]);
     const result = await runBufferedChain(
@@ -781,6 +819,10 @@ export class ProxyService {
       },
       signal,
     );
+    const routeLegs = routeLegsOf([
+      cheapLeg,
+      this.escalationLegFacts(p, c, result, legEndedMs(p.startedAt)),
+    ]);
     const trailLegs: AttemptTrailLeg[] = [
       { failures: cheapFailures, meta: c.cheap.meta, leg: 'cheap' },
       { failures: result.failures, meta: c.escalation.meta, leg: 'escalation' },
@@ -794,12 +836,13 @@ export class ProxyService {
           withCapacity(
             `cascade: escalated, all failed`,
             cheapCapacity,
-            capacitySuffix('esc', p.capacity?.escalation, null, result.failures),
+            capacitySuffix('esc', p.capacity?.escalation, null, result.failures, result.stopped),
           ),
           score,
           result.failures,
           attemptTrailEntries(trailLegs, result.error),
           c.scope,
+          routeLegs,
         ),
         {
           status: result.callerAborted ? 'cancelled' : 'error',
@@ -832,6 +875,7 @@ export class ProxyService {
         result.failures,
         attemptTrailEntries(trailLegs, null),
         c.scope,
+        routeLegs,
       ),
       {
         status: result.failures.length > 0 ? 'fallback' : 'success',
@@ -868,6 +912,7 @@ export class ProxyService {
       },
       AbortSignal.any([signal, AbortSignal.timeout(c.cheapTimeoutMs)]),
     );
+    const cheapEndedMs = legEndedMs(p.startedAt); // record-route-legs D4: at the walker's return
     if (cheap.ok) {
       const { score, escalate } = this.cascade.shouldEscalate(cheap.response, p.structuredDemand);
       const cheapServed: CheapServed = { response: cheap.response, servedIndex: cheap.servedIndex };
@@ -893,6 +938,7 @@ export class ProxyService {
               null,
             ),
             c.scope,
+            routeLegsOf([this.cheapLegFacts(p, c, cheap, cheapEndedMs)]),
           );
           const fellBack = cheap.failures.length > 0;
           void replay.outcome.then((o) =>
@@ -921,17 +967,18 @@ export class ProxyService {
       }
       // Provenance (add-auto-threshold-calibration): reaching here with a
       // PASSING verdict means the replay failed — an infrastructure fault,
-      // never quality evidence (r2-High-2).
+      // never quality evidence (r2-High-2). The cheap leg's end says which, and
+      // the row's `escalation_source` is its projection (record-route-legs D3).
       return this.escalateStream(
         p,
         c,
         cheapServed,
         score,
-        escalate ? 'quality_gate' : 'cheap_error',
         signal,
         capacitySuffix('cheap', p.capacity?.cheap, cheap.servedIndex, cheap.failures),
         cheap.failures,
         chainBillingEvidence(cheap),
+        this.cheapLegFacts(p, c, cheap, cheapEndedMs, escalate ? 'gate_failed' : 'replay_failed'),
       );
     }
     if (cheap.callerAborted) {
@@ -944,15 +991,18 @@ export class ProxyService {
           0,
           withCapacity(
             'cascade: client disconnected during cheap attempt',
-            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures, cheap.stopped),
           ),
           null,
           cheap.failures,
+          // The members walked before the client left (record-route-legs D6); the
+          // member in flight did not fail, so it is the route record's `stopped`.
           attemptTrailEntries(
             [{ failures: cheap.failures, meta: c.cheap.meta, leg: 'cheap' }],
             null,
           ),
           c.scope,
+          routeLegsOf([this.cheapLegFacts(p, c, cheap, cheapEndedMs)]),
         ),
         cheapCancelOutcome(cheap),
       );
@@ -970,7 +1020,7 @@ export class ProxyService {
           0,
           withCapacity(
             `cascade: cheap failed non-retryably (${cheap.error.kind})`,
-            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+            capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures, cheap.stopped),
           ),
           null,
           cheap.failures,
@@ -980,6 +1030,7 @@ export class ProxyService {
             cheap.error,
           ),
           c.scope,
+          routeLegsOf([this.cheapLegFacts(p, c, cheap, cheapEndedMs)]),
         ),
         {
           status: 'error',
@@ -995,17 +1046,17 @@ export class ProxyService {
       );
       throw providerErrorToProxy(cheap.error);
     }
-    // retryable cheap failure
+    // retryable cheap failure — `cheap_error`, from the cheap leg's own end
     return this.escalateStream(
       p,
       c,
       null,
       0,
-      'cheap_error',
       signal,
-      capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures),
+      capacitySuffix('cheap', p.capacity?.cheap, null, cheap.failures, cheap.stopped),
       cheap.failures,
       chainBillingEvidence(cheap),
+      this.cheapLegFacts(p, c, cheap, cheapEndedMs),
     );
   }
 
@@ -1014,7 +1065,6 @@ export class ProxyService {
     c: CascadeBundle,
     cheapServed: CheapServed | null,
     score: number | null,
-    source: 'quality_gate' | 'cheap_error',
     signal: AbortSignal,
     cheapCapacity: string | null,
     /** The executed cheap leg's pre-commit failures (add-fallback-attempt-
@@ -1022,7 +1072,10 @@ export class ProxyService {
     cheapFailures: readonly AttemptFailure[],
     /** See `escalateBuffered`: the executed cheap leg's billing evidence. */
     cheapBilling: readonly AttemptBilling[],
+    /** See `escalateBuffered`: the executed cheap leg's route facts. */
+    cheapLeg: RouteLegFacts,
   ): Promise<AsyncGenerator<string>> {
+    const source = escalationSourceOf(cheapLeg);
     // add-stream-keepalive: the live row now names the strong tier, before its walk.
     p.onEscalate?.(c.escalation.meta[0]);
     const result = await openStreamChain(this.breaker, c.escalation.attempts, p.client, p.routed, {
@@ -1035,6 +1088,11 @@ export class ProxyService {
       isCallerAbort: () => signal.aborted,
       ...(p.capture !== undefined ? { contentCollector: p.capture.collector } : {}),
     });
+    // A streamed leg's instant is its commit or its pre-commit give-up (design D4).
+    const routeLegs = routeLegsOf([
+      cheapLeg,
+      this.escalationLegFacts(p, c, result, legEndedMs(p.startedAt)),
+    ]);
     const trailLegs: AttemptTrailLeg[] = [
       { failures: cheapFailures, meta: c.cheap.meta, leg: 'cheap' },
       { failures: result.failures, meta: c.escalation.meta, leg: 'escalation' },
@@ -1048,12 +1106,13 @@ export class ProxyService {
           withCapacity(
             `cascade: escalated, all failed`,
             cheapCapacity,
-            capacitySuffix('esc', p.capacity?.escalation, null, result.failures),
+            capacitySuffix('esc', p.capacity?.escalation, null, result.failures, result.stopped),
           ),
           score,
           result.failures,
           attemptTrailEntries(trailLegs, result.error),
           c.scope,
+          routeLegs,
         ),
         {
           status: result.callerAborted ? 'cancelled' : 'error',
@@ -1084,6 +1143,7 @@ export class ProxyService {
       result.failures,
       attemptTrailEntries(trailLegs, null),
       c.scope,
+      routeLegs,
     );
     const fellBack = result.failures.length > 0;
     void result.outcome.then((o) => {
@@ -1109,6 +1169,42 @@ export class ProxyService {
       if (cheapServed !== null) this.recordCheapAttempt(p, c, requestId, cheapServed);
     });
     return result.frames;
+  }
+
+  /** The cheap leg's route facts (record-route-legs): ONE shape for every cascade
+   * settle site. `disposition` is set only where the router did not keep a served
+   * cheap answer — the gate failed it, or its replay failed. */
+  private cheapLegFacts(
+    p: Prepared,
+    c: CascadeBundle,
+    walk: LegWalk,
+    endedMs: number,
+    disposition?: 'gate_failed' | 'replay_failed',
+  ): RouteLegFacts {
+    return {
+      leg: 'cheap',
+      walk,
+      meta: c.cheap.meta,
+      capacity: p.capacity?.cheap,
+      endedMs,
+      ...(disposition !== undefined ? { disposition } : {}),
+    };
+  }
+
+  /** The escalation leg's route facts (record-route-legs). */
+  private escalationLegFacts(
+    p: Prepared,
+    c: CascadeBundle,
+    walk: LegWalk,
+    endedMs: number,
+  ): RouteLegFacts {
+    return {
+      leg: 'escalation',
+      walk,
+      meta: c.escalation.meta,
+      capacity: p.capacity?.escalation,
+      endedMs,
+    };
   }
 
   /** Ledger row for the superseded cheap call (its own price/usage), #14. */
@@ -1811,36 +1907,47 @@ export class ProxyService {
 
   private servedContext(
     p: Prepared,
-    servedIndex: number,
-    failures: readonly AttemptFailure[],
+    walk: Extract<LegWalk, { servedIndex: number }>,
+    endedMs: number,
   ): RecordingContext {
     // No terminal error: a served context's later post-commit failure never
     // enters `failures`, so its per-attempt trail carries no terminal marker.
-    return this.contextFor(p, servedIndex, servedIndex, failures, null);
+    return this.contextFor(p, walk.servedIndex, walk, endedMs, null);
   }
 
-  /** Total-chain failure is recorded against the primary. `terminalError` is the
-   * chain result's own error — the entry-composer marks the matching tail entry
-   * (exhaustion) and leaves a non-retryable stop unmarked (identity mismatch). */
+  /** Total-chain failure is recorded against the primary (its leg's member 0 —
+   * the price snapshot's source; the route record names the stopper). The
+   * terminal error is the chain result's own error — the entry-composer marks the
+   * matching tail entry (exhaustion) and leaves a non-retryable stop unmarked
+   * (identity mismatch). */
   private failedContext(
     p: Prepared,
-    failures: readonly AttemptFailure[],
-    terminalError: unknown,
+    walk: Extract<LegWalk, { ended: WalkEnd }>,
+    endedMs: number,
   ): RecordingContext {
-    return this.contextFor(p, 0, null, failures, terminalError);
+    return this.contextFor(p, 0, walk, endedMs, walk.error);
   }
 
+  /** The recording context of a primary (non-cascade) walk — every settle of that
+   * walk: plain, workload-routed, and a cascade plan whose bundles never
+   * materialized. It carries the walk's one-leg route record (record-route-legs). */
   private contextFor(
     p: Prepared,
     metaIndex: number,
-    servedIndex: number | null,
-    failures: readonly AttemptFailure[],
+    walk: LegWalk,
+    endedMs: number,
     terminalError: unknown,
   ): RecordingContext {
     const m = p.meta[metaIndex]!;
+    const { failures } = walk;
+    const servedIndex = 'servedIndex' in walk ? walk.servedIndex : null;
+    const stopped = 'servedIndex' in walk ? undefined : walk.stopped;
     const trailEntries = attemptTrailEntries([{ failures, meta: p.meta }], terminalError);
     return {
       ...(trailEntries.length > 0 ? { attemptFailures: trailEntries } : {}),
+      routeLegs: routeLegsOf([
+        { leg: 'primary', walk, meta: p.meta, capacity: p.capacity?.primary, endedMs },
+      ]),
       principal: p.principal,
       requestId: p.requestId,
       ...(p.onSettle !== undefined ? { onSettle: p.onSettle } : {}),
@@ -1857,7 +1964,7 @@ export class ProxyService {
       routingReason: withScope(
         withCapacity(
           reasonWithTrail(p.decision.routingReason, failures, p.meta),
-          capacitySuffix(null, p.capacity?.primary, servedIndex, failures),
+          capacitySuffix(null, p.capacity?.primary, servedIndex, failures, stopped),
         ),
         p.decision.scope,
       ),
@@ -1887,12 +1994,17 @@ export class ProxyService {
     failures: readonly AttemptFailure[],
     /** The leg-qualified per-attempt trail (add-fallback-attempt-detail),
      * composed at the call site so escalation rows aggregate BOTH executed
-     * legs (cheap first) — the recorder persists it on `error`, `fallback` and
-     * escalated `success` rows, never on `cancelled` (keep-cheap-leg-attempt-trail). */
+     * legs (cheap first) — the recorder persists it on `error`, `fallback`,
+     * `cancelled` (the members walked before the client left; record-route-legs
+     * design D6) and escalated `success` rows, and discards it only on a `success`
+     * that did not escalate. Every settle site composes it, cancels included. */
     attemptTrail: readonly AttemptFailureEntry[],
     /** The plan's reason scope (add-workload-scoped-bands) — appended LAST, after
      * the quality marker, fall-back trail, capacity notes, and the trail. */
     scope: string | null,
+    /** The executed legs' route record, in execution order (record-route-legs),
+     * built by `routeLegsOf` at the settle site. */
+    routeLegs: readonly RouteLeg[],
   ): RecordingContext {
     const reason = reasonWithTrail(`${baseReason} (q=${fmtQ(score)})`, failures, meta);
     const trail = classificationTrail(p);
@@ -1903,6 +2015,7 @@ export class ProxyService {
         withScope(trail === '' ? reason : `${reason}; ${trail}`, scope),
       ),
       ...(attemptTrail.length > 0 ? { attemptFailures: attemptTrail } : {}),
+      routeLegs,
     };
     // The learning vector rides the SERVED context ONLY (add-semantic-learning
     // D1/3.1) — the recorder's sink contributes it at settle, then drops it.
@@ -2254,6 +2367,7 @@ export function planWalkedChain(
   const attempts: ChainAttempt[] = [];
   const meta: AttemptMeta[] = [];
   const clampByIndex = new Map<number, string>();
+  const clampTo = new Map<number, number>();
   plan.members.forEach((m, i) => {
     meta.push(m.member.meta);
     if (m.clampTo === undefined) {
@@ -2261,8 +2375,28 @@ export function planWalkedChain(
     } else {
       attempts.push({ ...m.member.attempt, maxOutputTokens: m.clampTo });
       clampByIndex.set(i, `output_cap_clamped ${ask ?? 0}→${m.clampTo} (${m.label})`);
+      clampTo.set(i, m.clampTo);
     }
   });
+  // The deferrals as structure (record-route-legs design D5): the same entries the
+  // strings below render, keyed by the planner's EFFECTIVE index. Ordered by index,
+  // and a member deferred for both reasons states the capability one first.
+  const deferredList: RouteDeferral[] = [
+    ...plan.capabilityDeferred.flatMap((d): RouteDeferral[] => {
+      const capabilities = ROUTE_CAPABILITIES.filter((c: RouteCapability) =>
+        d.capabilities.includes(c),
+      );
+      return capabilities.length > 0
+        ? [{ index: d.index, model: d.label, reason: 'capability', capabilities }]
+        : [];
+    }),
+    ...plan.deferred.map((d): RouteDeferral => ({
+      index: d.index,
+      model: d.label,
+      reason: 'output_cap',
+      cap: d.cap,
+    })),
+  ].sort((a, b) => a.index - b.index);
   const capReason =
     plan.deferred.length > 0
       ? `output_cap_deferred ${plan.deferred.map((d) => `${d.label}(${d.cap}<${ask ?? 0})`).join(', ')}`
@@ -2281,34 +2415,167 @@ export function planWalkedChain(
       ? `${capReason}; ${capabilityReason}`
       : (capReason ?? capabilityReason);
   const capacity =
-    deferred !== null || clampByIndex.size > 0 ? { deferred, clampByIndex } : undefined;
+    deferred !== null || clampByIndex.size > 0
+      ? { deferred, clampByIndex, ask, deferredList, clampTo }
+      : undefined;
   return { bundle: { attempts, meta }, capacity };
 }
 
-/** The recorded capacity suffix for one EXECUTED walked chain: the plan-time
- * deferrals plus the clamps of attempts actually dispatched — the served
- * member and non-circuit-skip failures. A tail member skipped by an open
- * circuit (or never reached) records NO clamp. A member the walk's own deadline
- * cut off is a dispatched failure and records its clamp
- * (keep-cheap-leg-attempt-trail design D7). Any other non-retryable TERMINAL
- * failure after a clamped dispatch is the accepted under-record (the walker
- * surfaces no terminal index — never an over-record). */
-export function capacitySuffix(
-  leg: 'cheap' | 'esc' | null,
-  ann: CapacityAnnotations | undefined,
+/** The members ONE executed walked chain actually dispatched (record-route-legs
+ * design D5): the served member, every dispatched failure (a member the walk's own
+ * deadline cut off included), and a SENT member that stopped the walk — a
+ * non-retryable stop, or a member a client cancel caught in flight before commit.
+ * A circuit-open or plan-cooldown skip, a member never reached, and a stopper an
+ * abort caught before it was sent are not in it. The reason's capacity note and the
+ * route record's clamps both read this one set, so they never disagree. */
+export function dispatchedIndexes(
   servedIndex: number | null,
   failures: readonly AttemptFailure[],
-): string | null {
-  if (ann === undefined) return null;
-  const parts: string[] = [];
-  if (ann.deferred !== null) parts.push(ann.deferred);
+  stopped: WalkStopper | undefined,
+): ReadonlySet<number> {
   const dispatched = new Set<number>();
   if (servedIndex !== null) dispatched.add(servedIndex);
   for (const f of failures) if (f.dispatched !== false) dispatched.add(f.index);
+  if (stopped?.sent === true) dispatched.add(stopped.index);
+  return dispatched;
+}
+
+/** The recorded capacity suffix for one EXECUTED walked chain: the plan-time
+ * deferrals plus the clamps of attempts actually dispatched (`dispatchedIndexes`).
+ * A tail member skipped by an open circuit (or never reached) records NO clamp; a
+ * member the walk's own deadline cut off, and a sent member that stopped the walk
+ * or was in flight at a cancel, record theirs (record-route-legs design D5 — this
+ * closes the under-record keep-cheap-leg-attempt-trail accepted). A chain that
+ * dispatched no member contributes nothing, its deferral note included
+ * (fallback-routing): every member skipped, or a cancel or deadline before the
+ * first send. Pass the walker's `stopped` on an unserved walk; a served walk has none. */
+export function capacitySuffix(
+  leg: 'cheap' | 'esc' | null,
+  ann: Pick<CapacityAnnotations, 'deferred' | 'clampByIndex'> | undefined,
+  servedIndex: number | null,
+  failures: readonly AttemptFailure[],
+  stopped?: WalkStopper,
+): string | null {
+  if (ann === undefined) return null;
+  const dispatched = dispatchedIndexes(servedIndex, failures, stopped);
+  if (dispatched.size === 0) return null;
+  const parts: string[] = [];
+  if (ann.deferred !== null) parts.push(ann.deferred);
   for (const [i, s] of ann.clampByIndex) if (dispatched.has(i)) parts.push(s);
   if (parts.length === 0) return null;
   const joined = parts.join('; ');
   return leg === null ? joined : `${leg}[${joined}]`;
+}
+
+/** One executed leg's walker result, as the route record reads it: a served walk
+ * (`ok`/`stream`) or the way an unserved one ended. Both walkers' results fit. */
+export type LegWalk =
+  | { readonly servedIndex: number; readonly failures: readonly AttemptFailure[] }
+  | {
+      readonly ended: WalkEnd;
+      readonly stopped?: WalkStopper;
+      readonly error: ProviderError;
+      readonly failures: readonly AttemptFailure[];
+    };
+
+/** One executed leg's facts at settle (record-route-legs design D2/D3/D5). */
+export interface RouteLegFacts {
+  readonly leg: RouteLegName;
+  readonly walk: LegWalk;
+  /** The leg's members in EFFECTIVE walk order (the walk's index space). */
+  readonly meta: ReadonlyArray<{ readonly model: { readonly externalModelId: string } }>;
+  readonly capacity: CapacityAnnotations | undefined;
+  /** `legEndedMs` read immediately after the walker returned. */
+  readonly endedMs: number;
+  /** A served cheap leg the router did not keep: the quality gate judged its answer
+   * bad, or its streamed replay failed after a passing verdict. Absent = kept. */
+  readonly disposition?: 'gate_failed' | 'replay_failed';
+}
+
+/** Integer ms from the request's start (`p.startedAt`, the origin of `duration_ms`) to
+ * now, clamped to >= 0 (record-route-legs design D4). One read per leg, taken
+ * immediately after its walker returns. */
+export function legEndedMs(startedAt: number): number {
+  return Math.max(0, Math.round(Date.now() - startedAt));
+}
+
+/** The route record for a request's executed legs, in execution order
+ * (record-route-legs design D2/D3/D5). Every value is an enum, a boolean, a
+ * non-negative integer or an external model id the reason already carries
+ * (invariant 8). One builder for every settle site, so `escalation_source` and
+ * the cheap leg's end cannot drift apart: `gate_failed` is set exactly where the
+ * router escalates on the gate's verdict. */
+export function routeLegsOf(legs: readonly RouteLegFacts[]): RouteLeg[] {
+  return legs.map(routeLegOf);
+}
+
+/** An escalated row's `escalation_source`, as the projection of its cheap leg's end
+ * (cascade-routing; record-route-legs design D3): `quality_gate` exactly when the
+ * gate judged the cheap answer bad (`gate_failed`), `cheap_error` for every other
+ * escalation (`exhausted`, `deadline`, `replay_failed`, an escalated `stopped`).
+ * Derived, never passed beside the leg, so the two cannot disagree. */
+export function escalationSourceOf(
+  cheap: Pick<RouteLegFacts, 'disposition'>,
+): 'quality_gate' | 'cheap_error' {
+  return cheap.disposition === 'gate_failed' ? 'quality_gate' : 'cheap_error';
+}
+
+function routeLegOf(f: RouteLegFacts): RouteLeg {
+  const { walk, meta, capacity } = f;
+  const served = 'servedIndex' in walk;
+  const servedIndex = served ? walk.servedIndex : null;
+  const end: RouteLegEnd = served ? (f.disposition ?? 'served') : walk.ended;
+  // The walker names a stopper only on `stopped`, `deadline` and `cancelled`.
+  const stopper =
+    !served && (end === 'stopped' || end === 'deadline' || end === 'cancelled')
+      ? walk.stopped
+      : undefined;
+  const stopperModel =
+    stopper !== undefined ? meta[stopper.index]?.model.externalModelId : undefined;
+  const dispatched = dispatchedIndexes(servedIndex, walk.failures, stopper);
+  // Deferrals and clamps follow the reason's rule exactly (`capacitySuffix`): a leg that
+  // dispatched nothing records neither, and only a dispatched member records its clamp.
+  const deferred = capacity !== undefined && dispatched.size > 0 ? capacity.deferredList : [];
+  const clamps: RouteClamp[] = [];
+  if (capacity !== undefined) {
+    for (const [index, to] of capacity.clampTo) {
+      const model = meta[index]?.model.externalModelId;
+      if (dispatched.has(index) && model !== undefined) clamps.push({ index, model, to });
+    }
+  }
+  // The ask rides exactly when an output-cap fact is recorded; a capability-only
+  // deferral records none.
+  const planAsk = capacity?.ask ?? null;
+  const ask =
+    planAsk !== null && (clamps.length > 0 || deferred.some((d) => d.reason === 'output_cap'))
+      ? planAsk
+      : null;
+  return {
+    leg: f.leg,
+    end,
+    endedMs: f.endedMs,
+    ...(servedIndex !== null ? { servedIndex } : {}),
+    ...(stopper !== undefined && stopperModel !== undefined
+      ? {
+          stopped: {
+            index: stopper.index,
+            model: stopperModel,
+            sent: stopper.sent,
+            // The stopper's own error is the walk result's (a non-retryable stop never
+            // enters the trail); only a `stopped` end records it.
+            ...(end === 'stopped' && !served
+              ? {
+                  kind: walk.error.kind,
+                  ...(walk.error.status !== undefined ? { status: walk.error.status } : {}),
+                }
+              : {}),
+          },
+        }
+      : {}),
+    ...(ask !== null ? { ask } : {}),
+    ...(deferred.length > 0 ? { deferred } : {}),
+    ...(clamps.length > 0 ? { clamps } : {}),
+  };
 }
 
 /** The synthesized Anthropic `max_tokens` default, capped to a KNOWN model

@@ -437,6 +437,100 @@ describe('Dashboard a11y semantics', () => {
     }
   });
 
+  it("a route record's deferral, clamp and in-flight member are read as text, in walk order (record-route-legs 7.3)", async () => {
+    // dashboard-analytics "The route trace states every outcome in text", scenario "Recorded
+    // deferrals, clamps and stoppers are read as text": a cancelled request whose route record
+    // lists a deferred member, a clamp on its in-flight member, and that member in flight.
+    const base = buildRequestRows(1)[0]!;
+    const row = {
+      ...base,
+      status: 'cancelled' as const,
+      agentLabel: 'billing-bot',
+      decisionLayer: 'explicit',
+      escalated: false,
+      escalationSource: null,
+      providerLabel: 'Provider C',
+      modelLabel: 'model-c',
+      durationMs: 800,
+      errorKind: null,
+      errorStatus: null,
+      errorMessage: null,
+      errorRequestId: null,
+      errorMarkers: null,
+      attemptFailures: [
+        {
+          index: 0,
+          providerId: 'p1',
+          model: 'gpt-a',
+          kind: 'rate_limit',
+          status: 429,
+          dispatched: true,
+        },
+      ],
+      routeLegs: [
+        {
+          leg: 'primary' as const,
+          end: 'cancelled' as const,
+          endedMs: 790,
+          ask: 100_000,
+          stopped: { index: 1, model: 'gpt-b', sent: true },
+          deferred: [
+            {
+              index: 2,
+              model: 'gpt-text',
+              reason: 'capability' as const,
+              capabilities: ['tools' as const],
+            },
+          ],
+          clamps: [{ index: 1, model: 'gpt-b', to: 4_096 }],
+        },
+      ],
+    };
+    const store = createAppStore(new FakeApiClient({ requestRows: [row] }));
+    const { host, dispose } = mountApp(store);
+    try {
+      await flush();
+      store.go('requests');
+      await flush();
+      store.select(row.id);
+      await flush();
+      const drawer = host.querySelector<HTMLElement>('#inspector-drawer');
+      expect(drawer).not.toBeNull();
+      const lists = drawer!.querySelectorAll('ol');
+      expect(lists).toHaveLength(1);
+      const lis = [...lists[0]!.querySelectorAll<HTMLElement>(':scope > li')];
+      expect(lis.map((li) => li.textContent)).toEqual([
+        'billing-bot',
+        'router · explicit',
+        'deferred · gpt-text · lacks tools',
+        'gpt-a · rate_limit · HTTP 429',
+        'gpt-b · in flight · output capped at 4,096',
+        'cancelled by client · 800ms',
+      ]);
+      // What is announced is each item's whole text: only the strokes and marks are hidden.
+      const shownText = (n: Node): string => {
+        if (n instanceof HTMLElement && n.getAttribute('aria-hidden') === 'true') return '';
+        if (n.nodeType === Node.TEXT_NODE) return n.textContent ?? '';
+        return [...n.childNodes].map(shownText).join('');
+      };
+      for (const li of lis) {
+        for (const hidden of li.querySelectorAll('[aria-hidden="true"]'))
+          expect(hidden.matches('.rt-spine, .rt-branch, .rt-dot')).toBe(true);
+        expect(shownText(li)).toBe(li.textContent);
+      }
+      // The in-flight member and the failed one are told apart by their words alone.
+      expect(lis[4]!.textContent).not.toContain('rate_limit');
+      expect(lis[3]!.textContent).not.toContain('in flight');
+      expect(
+        lists[0]!.querySelectorAll(
+          'button, a, input, select, textarea, [tabindex], [role="button"]',
+        ),
+      ).toHaveLength(0);
+    } finally {
+      dispose();
+    }
+  });
+
   it('a modal above the drawer owns Tab — the suspended drawer never steals focus', async () => {
     const store = createAppStore(new FakeApiClient());
     const { host, dispose } = mountApp(store);

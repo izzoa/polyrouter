@@ -8,6 +8,8 @@ import {
   type RequestRow,
   type RequestsQuery,
   type RequestStatus,
+  type RouteDeferral,
+  type RouteLeg,
   type TimeseriesPoint,
 } from './api';
 import { fmtElapsed } from './batchBand';
@@ -230,7 +232,9 @@ export interface InspectorView {
   escalated: boolean;
   /** The Decision section's `quality signal` row; null hides it. Null on a `cheap_error`
    * escalation, whose recorded signal is not a gate verdict on the escalation
-   * (add-route-trace-cascade-legs design D8), and when no signal was recorded. */
+   * (add-route-trace-cascade-legs design D8), unless its route record says the cheap leg ended
+   * `replay_failed`: that answer passed the gate, so its signal is the real score
+   * (record-route-legs design D7). Null when no signal was recorded. */
   qualitySignal: number | null;
   /** L2 provenance (add-semantic-dashboard D4): the active classification source
    * (`learned`/`bundled`) and the verdict band when Layer 2 evaluated this
@@ -346,8 +350,10 @@ export interface ErrorView {
 /* ---- the route trace (add-route-trace-inspector design D1–D4, D10) ------------------- */
 
 /** How a route-trace node is drawn (design D6). Only a served outcome is `lit`; every
- * node also states its outcome in its text, so the emphasis only repeats the words. */
-export type RouteTraceEmphasis = 'lit' | 'neutral' | 'failed' | 'skipped';
+ * node also states its outcome in its text, so the emphasis only repeats the words.
+ * `in_flight` is the member a client's cancel caught in flight (record-route-legs design D7):
+ * contacted, so solid, and not a failure, so never red. */
+export type RouteTraceEmphasis = 'lit' | 'neutral' | 'failed' | 'skipped' | 'in_flight';
 
 /** A cascade leg's word, stated once by its leg row (add-route-trace-cascade-legs design D1,
  * D5). A primary (non-cascade) chain draws no leg row. */
@@ -380,23 +386,48 @@ export interface RouteTraceLegNode extends RouteTraceNodeBase {
   readonly emphasis: 'neutral';
   readonly leg: RouteTraceLeg;
   /** The row's one detail after ` · `: `ATTEMPTS_NOT_RECORDED` on a cheap leg row whose leg the
-   * row kept nothing about (design D6), the recorded escalation cause on an escalation row
-   * (design D4); null when there is none. */
+   * row kept nothing about (design D6), the escalation cause on an escalation row (design D4:
+   * the recorded `escalation_source` in words, or, record-route-legs design D7, the route
+   * record's cheap-leg end in words); null when there is none. */
   readonly detail: string | null;
+  /** The cheap leg's recorded end time, in the latency format (`fmtLatency(endedMs)`), on an
+   * escalation row whose cause the route record states (record-route-legs design D7): the row
+   * then reads `… · at <time>`. Null on every other leg row, which states no time. */
+  readonly at: string | null;
 }
 
-/** One recorded `attempt_failures` entry (add-fallback-attempt-detail), in stored order. It
- * names the member's model, never its provider (design D10), and carries no leg tag: the leg
+/** A member a leg's plan moved behind the others, from the route record (record-route-legs
+ * design D7): a router decision on the spine, like a leg row, never a branch, because the walk
+ * may never have reached it. It names the member in words and states why it was deferred. */
+export interface RouteTraceDeferralNode extends RouteTraceNodeBase {
+  readonly kind: 'deferral';
+  readonly emphasis: 'neutral';
+  readonly model: string;
+  /** `LACKS_TOOLS`, `LACKS_VISION` or `LACKS_TOOLS_AND_VISION`; null when the member was not
+   * deferred for a capability. Stated first. */
+  readonly lacks: string | null;
+  /** The output-cap reason's figures in the integer grouping: the member's cap, and the
+   * request's ask (null when the leg recorded none). Null when the member was not deferred
+   * for its output cap. */
+  readonly outputCap: { readonly cap: string; readonly ask: string | null } | null;
+}
+
+/** One recorded `attempt_failures` entry (add-fallback-attempt-detail), in stored order, or the
+ * sent member the route record names as stopping its leg's walk (record-route-legs design D7).
+ * It names the member's model, never its provider (design D10), and carries no leg tag: the leg
  * row above it states the leg (add-route-trace-cascade-legs design D5). */
 export interface RouteTraceAttemptNode extends RouteTraceNodeBase {
   readonly kind: 'attempt';
-  /** `skipped` for a never-dispatched member, `failed` for a dispatched failure. */
-  readonly emphasis: 'failed' | 'skipped';
+  /** `skipped` for a never-dispatched member, `failed` for a dispatched failure (a recorded
+   * non-retryable stopper included), `in_flight` for the member a client's cancel caught in
+   * flight. */
+  readonly emphasis: 'failed' | 'skipped' | 'in_flight';
   readonly model: string;
   /** A dispatched failure's label, `<kind> · HTTP <status>` or the kind alone when no
    * upstream status was recorded; for a member the walk's own deadline cut off, the cause
    * in words (`DEADLINE_LABEL_CHEAP` on the cheap leg, `DEADLINE_LABEL` off it) in place
-   * of the kind; `SKIP_LABEL` (or `PAUSE_LABEL`) for a never-dispatched member. */
+   * of the kind; `SKIP_LABEL` (or `PAUSE_LABEL`) for a never-dispatched member; `IN_FLIGHT`
+   * for an in-flight member. */
   readonly label: string;
   /** `deadline` when the label states the walk's deadline in words rather than a kind
    * token (keep-cheap-leg-attempt-trail design D5), so the view sets it as prose, not
@@ -406,6 +437,11 @@ export interface RouteTraceAttemptNode extends RouteTraceNodeBase {
    * request's trail explains every refusal and not just its kind. Null when the entry
    * carries none (including entries predating capture). */
   readonly markers: readonly string[] | null;
+  /** The output cap this member was sent with, in the integer grouping, when the route record
+   * lists a clamp of it at the same leg and index (record-route-legs design D7): the node then
+   * reads `… · output capped at <to>` after its markers. Null on a skipped member, and
+   * whenever the record lists none. */
+  readonly clamp: string | null;
 }
 
 /** The superseded cascade cheap call, drawn only from the recorded rollups (design D4):
@@ -440,12 +476,18 @@ export interface RouteTraceOutcomeNode extends RouteTraceNodeBase {
    * design D7): the node then also reads `QUALITY_GATE_PASSED`, on a second line after the
    * latency. Null on every other outcome, and on a kept answer that recorded no score. */
   readonly keptQuality: string | null;
+  /** The served member's recorded clamp, on a lit outcome only (record-route-legs design D7):
+   * its own line after the latency, above any kept-answer line, reading `output capped at <to>
+   * of <ask> asked`, or `output capped at <to>` when the leg recorded no ask. Figures in the
+   * integer grouping. Null on an unlit outcome, and whenever the record lists none. */
+  readonly clamp: { readonly to: string; readonly ask: string | null } | null;
 }
 
 export type RouteTraceNode =
   | RouteTraceSourceNode
   | RouteTraceDecisionNode
   | RouteTraceLegNode
+  | RouteTraceDeferralNode
   | RouteTraceAttemptNode
   | RouteTraceSupersededNode
   | RouteTraceOutcomeNode;
@@ -484,10 +526,211 @@ export const CAUSE_CHEAP_DID_NOT_SERVE = 'cheap leg did not serve';
 /** The kept cheap answer's verdict, before its `q=<score>`. */
 export const QUALITY_GATE_PASSED = 'quality gate passed';
 
+/* Route-record contract strings (record-route-legs design D7). DESIGN.md's Route Trace section
+   quotes them exactly. */
+/** A deferral row's word: `deferred · <model> · <reason>`. */
+export const DEFERRED = 'deferred';
+/** A deferral reason: the member lacks tool calling. */
+export const LACKS_TOOLS = 'lacks tools';
+/** A deferral reason: the member lacks vision. */
+export const LACKS_VISION = 'lacks vision';
+/** A deferral reason: the member lacks both. */
+export const LACKS_TOOLS_AND_VISION = 'lacks tools and vision';
+/** An output-cap deferral reason's opening words: `output cap <cap> < <ask> asked`. */
+export const OUTPUT_CAP = 'output cap';
+/** The word after the request's ask, in an output-cap deferral and a served clamp line. */
+export const ASKED = 'asked';
+/** A clamp's opening words: `output capped at <to>` on an attempt, and `output capped at <to> of
+ * <ask> asked` on the lit outcome's own line. */
+export const OUTPUT_CAPPED_AT = 'output capped at';
+/** An in-flight member's label: `<model> · in flight`. */
+export const IN_FLIGHT = 'in flight';
+/** The escalation cause for a recorded cheap end of `exhausted`. */
+export const CAUSE_CHEAP_EXHAUSTED = 'cheap leg exhausted';
+/** The escalation cause for a recorded cheap end of `deadline`. */
+export const CAUSE_CHEAP_DEADLINE = 'cheap deadline';
+/** The escalation cause for a recorded cheap end of `replay_failed`. */
+export const CAUSE_NOT_DELIVERED = 'cheap answer not delivered';
+/** The escalation cause for a recorded cheap end of `stopped`. */
+export const CAUSE_CHEAP_STOPPED = 'cheap leg stopped';
+/** The word before the cheap leg's recorded end time on the escalation row: `· at <time>`. */
+export const ENDED_AT = 'at';
+
 const joinDot = (parts: readonly (string | null)[]): string =>
   parts.filter((p): p is string => p !== null).join(' · ');
 
-function attemptNode(a: AttemptFailureEntry): RouteTraceAttemptNode {
+/** A recorded integer in the dashboard's integer grouping (the price receipt's token counts'):
+ * `4,096`, `100,000`. */
+const grouped = (n: number): string => n.toLocaleString();
+
+/** `output cap <cap> < <ask> asked`, or `output cap <cap>` when the leg recorded no ask. The `<`
+ * compares two token counts; joined as words so it never reads as the retired spaced
+ * below-precision money form (`figureStrings.test.ts`). */
+export function outputCapText(cap: string, ask: string | null): string {
+  return (ask === null ? [OUTPUT_CAP, cap] : [OUTPUT_CAP, cap, '<', ask, ASKED]).join(' ');
+}
+
+/** `output capped at <to>`, then ` of <ask> asked` when an ask is given (the lit outcome's
+ * line; an attempt's part never states the ask). */
+export function clampText(to: string, ask: string | null = null): string {
+  return ask === null
+    ? `${OUTPUT_CAPPED_AT} ${to}`
+    : `${OUTPUT_CAPPED_AT} ${to} of ${ask} ${ASKED}`;
+}
+
+/* ---- the route record (record-route-legs design D2, D7) ------------------------------ */
+
+/** The row's route record; a null (every row recorded before the column, and a batch item) or
+ * empty one is no record, and every reading below then falls back to what it drew before. */
+const routeLegsOf = (r: Pick<RequestRow, 'routeLegs'>): readonly RouteLeg[] => r.routeLegs ?? [];
+
+/** The recorded leg of that name, or undefined. */
+const recordedLeg = (
+  r: Pick<RequestRow, 'routeLegs'>,
+  name: RouteLeg['leg'],
+): RouteLeg | undefined => routeLegsOf(r).find((l) => l.leg === name);
+
+/** The record's final leg (its last entry, in execution order), or undefined without one. */
+const finalLeg = (r: Pick<RequestRow, 'routeLegs'>): RouteLeg | undefined => routeLegsOf(r).at(-1);
+
+/** The leg a trail entry was walked on: its recorded leg, or `primary` for an untagged entry of
+ * a non-cascade chain. Trail and record indexes share one space per leg (design D2). */
+const entryLeg = (a: AttemptFailureEntry): RouteLeg['leg'] => a.leg ?? 'primary';
+
+/** The cap a leg's record lists for the member at `index`, grouped, or null. */
+function clampOf(leg: RouteLeg | undefined, index: number): string | null {
+  const c = leg?.clamps?.find((x) => x.index === index);
+  return c === undefined ? null : grouped(c.to);
+}
+
+/** A leg's end that names no served member: a final leg that ended so leaves the row's
+ * provider and model columns naming that leg's first member, not the member that stopped it
+ * (design D8), so the outcome names neither. */
+const isStopEnd = (end: RouteLeg['end']): boolean =>
+  end === 'stopped' || end === 'cancelled' || end === 'deadline';
+
+/** The escalation cause in words for a recorded cheap-leg end; undefined for an end that states
+ * none (`served`, `cancelled`), whose escalation row keeps the `escalation_source` words. */
+const CHEAP_END_CAUSE: Readonly<Partial<Record<RouteLeg['end'], string>>> = {
+  gate_failed: CAUSE_QUALITY_GATE,
+  exhausted: CAUSE_CHEAP_EXHAUSTED,
+  deadline: CAUSE_CHEAP_DEADLINE,
+  replay_failed: CAUSE_NOT_DELIVERED,
+  stopped: CAUSE_CHEAP_STOPPED,
+};
+
+/** A deferral's capability reason in words, or null when it names neither capability. */
+function lacksText(capabilities: ReadonlySet<string>): string | null {
+  const tools = capabilities.has('tools');
+  const vision = capabilities.has('vision');
+  return tools && vision
+    ? LACKS_TOOLS_AND_VISION
+    : tools
+      ? LACKS_TOOLS
+      : vision
+        ? LACKS_VISION
+        : null;
+}
+
+/** A leg's deferral rows (design D7): one per deferred member, in index order, the capability
+ * reason first when a member was deferred for both. Empty without a recorded leg. */
+function deferralNodes(leg: RouteLeg | undefined): RouteTraceDeferralNode[] {
+  const byIndex = new Map<number, RouteDeferral[]>();
+  for (const d of leg?.deferred ?? []) byIndex.set(d.index, [...(byIndex.get(d.index) ?? []), d]);
+  const ask = leg?.ask === undefined ? null : grouped(leg.ask);
+  return [...byIndex.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([, ds]) => {
+      const capabilities = new Set<string>();
+      let cap: number | null = null;
+      for (const d of ds) {
+        if (d.reason === 'capability') for (const c of d.capabilities) capabilities.add(c);
+        else cap ??= d.cap;
+      }
+      const lacks = lacksText(capabilities);
+      const outputCap = cap === null ? null : { cap: grouped(cap), ask };
+      const model = ds[0]!.model;
+      return {
+        kind: 'deferral',
+        emphasis: 'neutral',
+        model,
+        lacks,
+        outputCap,
+        text: joinDot([
+          DEFERRED,
+          model,
+          lacks,
+          outputCap === null ? null : outputCapText(outputCap.cap, outputCap.ask),
+        ]),
+      };
+    });
+}
+
+/** The `<kind> · HTTP <status>` label of a dispatched failure, or the kind alone. */
+const failureLabel = (kind: string, status: number | null | undefined): string =>
+  `${kind}${status !== undefined && status !== null ? ` · HTTP ${String(status)}` : ''}`;
+
+/** An attempt node from its parts; `text` joins them in drawn order. */
+function attemptOf(
+  emphasis: RouteTraceAttemptNode['emphasis'],
+  model: string,
+  label: string,
+  stop: 'deadline' | null,
+  markers: readonly string[] | null,
+  clamp: string | null,
+): RouteTraceAttemptNode {
+  return {
+    kind: 'attempt',
+    emphasis,
+    model,
+    label,
+    stop,
+    markers,
+    clamp,
+    text: joinDot([model, label, ...(markers ?? []), clamp === null ? null : clampText(clamp)]),
+  };
+}
+
+/** The sent member a leg's record names as stopping its walk (design D7), drawn as the leg's
+ * last node: a failed attempt on a `stopped` end (`<model> · <kind> · HTTP <status>`), an
+ * `in_flight` one on a `cancelled` end. Null when the record names no such member, when it was
+ * never sent (as for any member the walk did not contact), and when the trail already holds an
+ * entry at the same leg and index, as RT-2's deadline cut does: a member is drawn once. A
+ * deadline stopper the trail does not hold reads as that entry would. A `stopped` end that
+ * recorded neither a kind nor a status has nothing to state and draws none. */
+function stopperNode(
+  leg: RouteLeg | undefined,
+  entries: readonly AttemptFailureEntry[],
+): RouteTraceAttemptNode | null {
+  const s = leg?.stopped;
+  if (leg === undefined || s === undefined || !s.sent || !isStopEnd(leg.end)) return null;
+  if (entries.some((a) => entryLeg(a) === leg.leg && a.index === s.index)) return null;
+  const clamp = clampOf(leg, s.index);
+  switch (leg.end) {
+    case 'cancelled':
+      return attemptOf('in_flight', s.model, IN_FLIGHT, null, null, clamp);
+    case 'deadline':
+      return attemptOf(
+        'failed',
+        s.model,
+        leg.leg === 'cheap' ? DEADLINE_LABEL_CHEAP : DEADLINE_LABEL,
+        'deadline',
+        null,
+        clamp,
+      );
+    default: {
+      const label =
+        s.kind !== undefined
+          ? failureLabel(s.kind, s.status)
+          : s.status !== undefined
+            ? `HTTP ${String(s.status)}`
+            : null;
+      return label === null ? null : attemptOf('failed', s.model, label, null, null, clamp);
+    }
+  }
+}
+
+function attemptNode(a: AttemptFailureEntry, leg: RouteLeg | undefined): RouteTraceAttemptNode {
   const skipped = a.dispatched === false;
   // A never-dispatched member reads its skip label whatever else it carries; only a
   // dispatched member can have been cut off by the deadline.
@@ -500,17 +743,18 @@ function attemptNode(a: AttemptFailureEntry): RouteTraceAttemptNode {
       ? a.leg === 'cheap'
         ? DEADLINE_LABEL_CHEAP
         : DEADLINE_LABEL
-      : `${a.kind}${a.status !== undefined && a.status !== null ? ` · HTTP ${String(a.status)}` : ''}`;
-  const markers = normalizeMarkers(a.markers ?? null);
-  return {
-    kind: 'attempt',
-    emphasis: skipped ? 'skipped' : 'failed',
-    model: a.model,
+      : failureLabel(a.kind, a.status);
+  // record-route-legs design D7: a clamp the leg's record lists at this entry's index, on a
+  // dispatched member only (a skipped one was never sent, so it was never capped).
+  const clamp = skipped ? null : clampOf(leg, a.index);
+  return attemptOf(
+    skipped ? 'skipped' : 'failed',
+    a.model,
     label,
     stop,
-    markers,
-    text: joinDot([a.model, label, ...(markers ?? [])]),
-  };
+    normalizeMarkers(a.markers ?? null),
+    clamp,
+  );
 }
 
 /** The escalation row's cause, in words, from the recorded `escalation_source` alone
@@ -545,8 +789,31 @@ function drawsEscalationRow(r: Pick<RequestRow, 'escalated' | 'attemptFailures'>
   return r.escalated || (r.attemptFailures ?? []).some((a) => a.leg === 'escalation');
 }
 
-function legNode(leg: RouteTraceLeg, detail: string | null): RouteTraceLegNode {
-  return { kind: 'leg', emphasis: 'neutral', leg, detail, text: joinDot([leg, detail]) };
+function legNode(
+  leg: RouteTraceLeg,
+  detail: string | null,
+  at: string | null = null,
+): RouteTraceLegNode {
+  return {
+    kind: 'leg',
+    emphasis: 'neutral',
+    leg,
+    detail,
+    at,
+    text: joinDot([leg, detail, at === null ? null : `${ENDED_AT} ${at}`]),
+  };
+}
+
+/** The escalation row (record-route-legs design D7): when the route record holds a cheap leg
+ * whose end states a cause, that cause and the leg's recorded end time, `… · at <time>`, in the
+ * latency format; otherwise RT-1's words for the recorded `escalation_source`, with no time.
+ * Never read from the routing reason, the latency or a configured deadline. */
+function escalationRow(r: RequestRow): RouteTraceLegNode {
+  const cheap = recordedLeg(r, 'cheap');
+  const cause = cheap === undefined ? undefined : CHEAP_END_CAUSE[cheap.end];
+  return cheap !== undefined && cause !== undefined
+    ? legNode(ESCALATION_LEG, cause, fmtLatency(cheap.endedMs))
+    : legNode(ESCALATION_LEG, escalationCause(r.escalationSource));
 }
 
 /** Design D7: the gate score of a cheap answer the cascade kept: a `cascade` row that did not
@@ -595,9 +862,13 @@ function supersededNode(
  *   that ended such a walk never enters the trail (a non-retryable stop's or a post-commit
  *   failure's error is not a recorded failure), so a recorded provider that the trail also
  *   holds may be the leg's first member rather than the last one tried.
- * Null leaves the outcome's text as it read before. A `cancelled` row keeps no trail (the
- * recorder stores `attempt_failures` only on `error` and `fallback` rows), so it names the
- * recorded member, as the outcome already names its model. */
+ * Null leaves the outcome's text as it read before. The trail is kept on `error`, `fallback`
+ * and `cancelled` rows and on an escalated `success` (record-route-legs design D6); a
+ * `cancelled` row recorded before that kept none, so it names the recorded member, as the
+ * outcome already names its model.
+ *
+ * A row with a route record reads this only when its final leg ended `exhausted` or with an
+ * end the outcome rule does not name (record-route-legs design D7, `outcomeNode`). */
 function unlitProvider(r: RequestRow): string | null {
   const provider = r.providerLabel ?? r.providerId;
   if (provider === null) return null;
@@ -610,19 +881,37 @@ function unlitProvider(r: RequestRow): string | null {
   return lastTried ? provider : null;
 }
 
+/** The served member's recorded clamp (record-route-legs design D7): on a final leg that ended
+ * `served`, a clamp the leg lists at its `servedIndex`, with the leg's recorded ask. */
+function servedClamp(final: RouteLeg | undefined): RouteTraceOutcomeNode['clamp'] {
+  if (final?.end !== 'served' || final.servedIndex === undefined) return null;
+  const to = clampOf(final, final.servedIndex);
+  return to === null ? null : { to, ask: final.ask === undefined ? null : grouped(final.ask) };
+}
+
 /** Design D3: exactly one outcome node; lit only for `success` / `fallback`. An unlit
  * outcome names the recorded provider first when `unlitProvider` allows it. A kept cheap
  * answer also states its passing verdict after the latency (add-route-trace-cascade-legs
- * design D7). */
+ * design D7).
+ *
+ * A row with a route record (record-route-legs design D7, D8): its provider and model columns
+ * name a failed or cancelled leg's FIRST member, so when the final leg ended `stopped`,
+ * `cancelled` or `deadline` (sent or not) the unlit outcome names neither, and the stopping
+ * member, when sent, is the leg's own last node. A final leg that ended `served` (a failure or
+ * cancel after commit) names the recorded provider and model, the committed member's. Any other
+ * end (`exhausted` above all) keeps the rule a row without a record reads. A lit outcome states
+ * its served member's recorded clamp on its own line. */
 function outcomeNode(r: RequestRow): RouteTraceOutcomeNode {
   const latency = requestLatency(r);
   const recordedModel = r.modelLabel ?? r.modelId;
+  const recordedProvider = r.providerLabel ?? r.providerId;
   const node = (
     emphasis: 'lit' | 'neutral',
     provider: string | null,
     model: string | null,
     result: string,
     kept: string | null = null,
+    clamp: RouteTraceOutcomeNode['clamp'] = null,
   ): RouteTraceOutcomeNode => ({
     kind: 'outcome',
     emphasis,
@@ -631,22 +920,36 @@ function outcomeNode(r: RequestRow): RouteTraceOutcomeNode {
     result,
     latency,
     keptQuality: kept,
+    clamp,
     text: joinDot([
       provider,
       model,
       result,
       latency,
+      clamp === null ? null : clampText(clamp.to, clamp.ask),
       ...(kept === null ? [] : [QUALITY_GATE_PASSED, kept]),
     ]),
   });
+  const final = finalLeg(r);
+  const stopped = final !== undefined && isStopEnd(final.end);
+  const committed = final?.end === 'served';
   // `request_log.status` is free-form text at the database (`RequestStatus` is a known
   // status or any string), so an unrecognised value takes the default branch.
   const status = r.status;
   switch (status) {
     case 'success':
     case 'fallback':
-      return node('lit', r.providerLabel ?? r.providerId, recordedModel, 'served', keptQuality(r));
+      return node(
+        'lit',
+        recordedProvider,
+        recordedModel,
+        'served',
+        keptQuality(r),
+        servedClamp(final),
+      );
     case 'error':
+      if (stopped) return node('neutral', null, null, 'failed');
+      if (committed) return node('neutral', recordedProvider, recordedModel, 'failed');
       // An exhausted chain's terminal member is already the last attempt node, so the
       // outcome does not name a model again; any other error names the recorded one.
       return node(
@@ -656,10 +959,17 @@ function outcomeNode(r: RequestRow): RouteTraceOutcomeNode {
         'failed',
       );
     case 'cancelled':
+      if (stopped) return node('neutral', null, null, 'cancelled by client');
+      if (committed) return node('neutral', recordedProvider, recordedModel, 'cancelled by client');
       return node('neutral', unlitProvider(r), recordedModel, 'cancelled by client');
     default:
       // Verbatim, never blank: an empty value reads `unknown`, as the status badge does.
-      return node('neutral', unlitProvider(r), null, status === '' ? 'unknown' : status);
+      return node(
+        'neutral',
+        stopped ? null : unlitProvider(r),
+        null,
+        status === '' ? 'unknown' : status,
+      );
   }
 }
 
@@ -684,8 +994,11 @@ function buildRouteTrace(r: RequestRow, attemptParts: readonly FigurePart[]): Ro
   // walk order, cheap leg first. With no cheap entry the split is at 0, so a primary chain
   // keeps its whole array in stored order and a superseded node follows the decision.
   const boundary = entries.findLastIndex((a) => a.leg === 'cheap') + 1;
-  const cheapEntries = entries.slice(0, boundary).map(attemptNode);
-  const laterEntries = entries.slice(boundary).map(attemptNode);
+  // record-route-legs design D7: each entry reads its leg's record for a clamp at its index.
+  const toNode = (a: AttemptFailureEntry): RouteTraceAttemptNode =>
+    attemptNode(a, recordedLeg(r, entryLeg(a)));
+  const cheapEntries = entries.slice(0, boundary).map(toNode);
+  const laterEntries = entries.slice(boundary).map(toNode);
   const superseded = supersededNode(r, attemptParts);
   const layer = r.decisionLayer;
   const head: RouteTraceNode[] = [
@@ -693,32 +1006,59 @@ function buildRouteTrace(r: RequestRow, attemptParts: readonly FigurePart[]): Ro
     { kind: 'decision', emphasis: 'neutral', layer, text: `router · ${layer}` },
   ];
   const supersededNodes = superseded === null ? [] : [superseded];
+  /** A leg's sent stopper as its last node, when the record names one to draw (design D7). */
+  const stopper = (leg: RouteLeg | undefined): RouteTraceNode[] => {
+    const node = stopperNode(leg, entries);
+    return node === null ? [] : [node];
+  };
   if (!isCascadeRequest(r)) {
-    return [...head, ...cheapEntries, ...supersededNodes, ...laterEntries, outcomeNode(r)];
+    // A primary chain: its deferral rows after the decision chip, its stopper after its trail.
+    const primary = recordedLeg(r, 'primary');
+    return [
+      ...head,
+      ...deferralNodes(primary),
+      ...cheapEntries,
+      ...supersededNodes,
+      ...laterEntries,
+      ...stopper(primary),
+      outcomeNode(r),
+    ];
   }
   // add-route-trace-cascade-legs design D3: a `cheap leg` row, the cheap half and the
   // superseded call under it, then the `escalation` row with its recorded cause and the
   // remaining entries. A request that did not escalate draws no escalation row, and every
-  // entry sits under the cheap leg row.
+  // entry sits under the cheap leg row. record-route-legs design D7: each leg's deferral rows
+  // directly under its leg row, and its sent stopper after its trail (before the superseded
+  // call, which sits after the cheap leg's attempt nodes).
+  const cheap = recordedLeg(r, 'cheap');
+  const escalated = recordedLeg(r, 'escalation');
   const escalation = drawsEscalationRow(r);
-  // Design D6: say so when the row kept nothing the trace can draw for the cheap leg.
-  const cheapUnrecorded = escalation && cheapEntries.length === 0 && superseded === null;
+  // Design D6: say so when the row kept nothing the trace can draw for the cheap leg. A route
+  // record that holds a cheap leg never needs the note: its escalation row states how that leg
+  // ended (record-route-legs design D7).
+  const cheapUnrecorded =
+    escalation && cheapEntries.length === 0 && superseded === null && cheap === undefined;
   return [
     ...head,
     legNode(CHEAP_LEG, cheapUnrecorded ? ATTEMPTS_NOT_RECORDED : null),
+    ...deferralNodes(cheap),
     ...cheapEntries,
+    ...stopper(cheap),
     ...supersededNodes,
-    ...(escalation ? [legNode(ESCALATION_LEG, escalationCause(r.escalationSource))] : []),
+    ...(escalation ? [escalationRow(r), ...deferralNodes(escalated)] : []),
     ...laterEntries,
+    ...(escalation ? stopper(escalated) : []),
     outcomeNode(r),
   ];
 }
 
 /** The request's recorded route as an ordered node list (design D1): a source node, the
- * decision chip, the leg rows a cascade request draws, one node per recorded attempt in stored
- * walk order (with the superseded cascade call between the legs), and one outcome node. Built
- * from this row alone: never from a chain member the request did not walk, from the routing
- * reason, from current routing configuration, or from a commit time, which is not recorded. */
+ * decision chip, the leg rows a cascade request draws, the deferral rows its route record lists,
+ * one node per recorded attempt in stored walk order (with the superseded cascade call between
+ * the legs), the sent member its route record names as stopping a walk, and one outcome node.
+ * Built from this row alone: never from a chain member the request did not walk (a recorded
+ * deferral names one in words, on the spine), from the routing reason, from current routing
+ * configuration, or from a commit time, which is not recorded. */
 export function toRouteTrace(r: RequestRow): RouteTraceNode[] {
   return buildRouteTrace(r, attemptCostParts(r));
 }
@@ -890,8 +1230,13 @@ export function toInspectorView(r: RequestRow): InspectorView {
     // add-route-trace-cascade-legs design D8: on a `cheap_error` escalation the recorded signal
     // is not the gate's verdict on the escalation (the proxy writes a placeholder 0, or a
     // passing score whose replay failed), so the Decision section draws no row for it. The
-    // verbatim routing reason keeps its `(q=…)`.
-    qualitySignal: r.escalationSource === 'cheap_error' ? null : r.qualitySignal,
+    // verbatim routing reason keeps its `(q=…)`. record-route-legs design D7: a route record
+    // whose cheap leg ended `replay_failed` says which: that answer passed the gate, so its
+    // signal is the real score and the row renders it.
+    qualitySignal:
+      r.escalationSource === 'cheap_error' && recordedLeg(r, 'cheap')?.end !== 'replay_failed'
+        ? null
+        : r.qualitySignal,
     semanticSource: r.semanticSource,
     semanticBand: r.semanticBand,
     workloadClass: r.workloadClass,

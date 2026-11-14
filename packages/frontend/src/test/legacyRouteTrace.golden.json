@@ -1,0 +1,690 @@
+{
+  "rt-error": {
+    "texts": [
+      "billing-bot",
+      "router · explicit",
+      "gpt-a · rate_limit · HTTP 429",
+      "Provider A · failed · 2.10s"
+    ],
+    "sha256": "5987094afb17e3dbfefc5d13cb2c4d2cf4c2b2e7e481a1c850a49dc6fb2916d9"
+  },
+  "rt-fallback": {
+    "texts": [
+      "billing-bot",
+      "router · header",
+      "gpt-a · rate_limit · HTTP 429 · rate_limit_exceeded",
+      "gpt-b · skipped — circuit open (provider not contacted)",
+      "Provider C · model-c · served · 1.24s"
+    ],
+    "sha256": "99a83fa2222a0f1023904d4afdf328ba374404375d893c84d542fe498da92802"
+  },
+  "rt-success": {
+    "texts": ["(no agent)", "router · explicit", "Provider C · model-c · served · 412ms"],
+    "sha256": "5bde10effe76ad57c25c5d97fc43d0758282226db64565ef55cf61dbed46e251"
+  },
+  "rt-cascade": {
+    "texts": [
+      "billing-bot",
+      "router · cascade",
+      "cheap leg",
+      "cheap-a · timeout",
+      "cheap attempt superseded · q=0.42 · $0.0031",
+      "escalation · quality gate",
+      "strong-a · server_error · HTTP 503",
+      "Provider S · model-strong · served · 1.24s"
+    ],
+    "sha256": "4c99ac31c0a2eb4a40febc0ea347f80cb4c6e259569a52cac01703ee0edb56d4"
+  },
+  "rt-batch": {
+    "texts": ["billing-bot", "router · explicit", "Provider C · model-c · served · 2h 3m"],
+    "sha256": "52a78e2ff13b52785f8ee065eceb2c7017f3d0e3347a9a4e7542cbf01f5fc2c4"
+  },
+  "rt-unrecorded": {
+    "texts": [
+      "Lobechat",
+      "router · cascade",
+      "cheap leg · attempts not recorded",
+      "escalation · cheap leg did not serve",
+      "XiaomiMiMo · mimo-v2.6-pro · served · 38.89s"
+    ],
+    "sha256": "55c33ef8b97ae6eb88ada2db397dbcc6b83762b5bd98b2092bcf1adc90216fd1"
+  },
+  "rt-kept": {
+    "texts": [
+      "billing-bot",
+      "router · cascade",
+      "cheap leg",
+      "Groq · llama-cheap · served · 1.24s · quality gate passed · q=0.87"
+    ],
+    "sha256": "9a6299861d8268fde40340e7bb86f4af8aff49ff1124e57447dd5987ef625ec0"
+  },
+  "rt-deadline": {
+    "texts": [
+      "Lobechat",
+      "router · cascade",
+      "cheap leg",
+      "cheap-1 · no reply by the cheap deadline",
+      "escalation · cheap leg did not serve",
+      "XiaomiMiMo · mimo-v2.6-pro · served · 38.89s"
+    ],
+    "sha256": "4d582bf5e4ab40986caba5298dc17a83e79ad5edbed4e95b6cbae27ee2766d89"
+  },
+  "lg-cancelled": {
+    "texts": [
+      "(no agent)",
+      "router · explicit",
+      "Provider C · model-c · cancelled by client · 412ms"
+    ],
+    "sha256": "bb0795a435c70d16d214e425888796c4e23b6ab95a1ac5be28f6580c824a1c99"
+  },
+  "lg-throttled": {
+    "texts": ["(no agent)", "router · explicit", "Provider C · throttled · 412ms"],
+    "sha256": "f87fc39d8b8158a1921362ede701dd5275e8b238fbe368bca074e6c78761ad76"
+  },
+  "lg-cascade-cancelled": {
+    "texts": [
+      "billing-bot",
+      "router · cascade",
+      "cheap leg",
+      "cheap-a · timeout",
+      "cheap attempt superseded · q=0.42 · $0.0031",
+      "escalation · quality gate",
+      "strong-a · server_error · HTTP 503",
+      "Provider S · model-strong · cancelled by client · 1.24s"
+    ],
+    "sha256": "00dfcbce5837400c92b11930cc1b21a62c51b9158e1670f8d020b2be5a6e825f"
+  },
+  "lg-cascade-error": {
+    "texts": [
+      "billing-bot",
+      "router · cascade",
+      "cheap leg",
+      "cheap-a · timeout",
+      "cheap attempt superseded · q=0.42 · $0.0031",
+      "escalation · quality gate",
+      "strong-a · server_error · HTTP 503",
+      "Provider S · model-strong · failed · 1.24s"
+    ],
+    "sha256": "09ee586f33fd62f58257a43bf452fcf278b21c2ee72d6bd11c5847569ce3b2dd"
+  },
+  "lg-unrecorded-error": {
+    "texts": [
+      "Lobechat",
+      "router · cascade",
+      "cheap leg · attempts not recorded",
+      "escalation · cheap leg did not serve",
+      "XiaomiMiMo · mimo-v2.6-pro · failed · 38.89s"
+    ],
+    "sha256": "53b2ca7acced288d44d832df99f47994fcdc58f750d4541884b15e84aaa75bf2"
+  },
+  "lg-unrecorded-replayed": {
+    "texts": [
+      "Lobechat",
+      "router · cascade",
+      "cheap leg",
+      "cheap attempt superseded · $0.0031",
+      "escalation · cheap leg did not serve",
+      "XiaomiMiMo · mimo-v2.6-pro · served · 38.89s"
+    ],
+    "sha256": "b5ecd95e56c27a60a38e328594f4034e6d923ebce635f9d683519f28d85221c4"
+  },
+  "lg-kept-cancelled": {
+    "texts": [
+      "billing-bot",
+      "router · cascade",
+      "cheap leg",
+      "Groq · llama-cheap · cancelled by client · 1.24s"
+    ],
+    "sha256": "ab490e605c186aa4b202cf412c165ccd4162c5f8804de231749aeaff8308aea4"
+  },
+  "lg-error-stop": {
+    "texts": [
+      "billing-bot",
+      "router · explicit",
+      "gpt-a · rate_limit · HTTP 429",
+      "model-c · failed · 2.10s"
+    ],
+    "sha256": "96e488526ee772a90e38c85e98d6cf11379a24479ebcf7e5c3dac2ba4179cde4"
+  },
+  "req-000": {
+    "texts": ["agent-0", "router · explicit", "Provider 0 · Model 0 · served · 500ms"],
+    "sha256": "d698c2659ac0af042a4434a3a259055be64935b25894024547187ccfe1d64a16"
+  },
+  "req-001": {
+    "texts": ["agent-1", "router · header", "Provider 1 · Model 1 · served · 510ms"],
+    "sha256": "f44d954a02cb112d24d25f9ff6d34c48bcd8fa4b1747bbe7030c2f5155a48b69"
+  },
+  "req-002": {
+    "texts": ["agent-2", "router · default", "Provider 0 · Model 2 · served · 520ms"],
+    "sha256": "6b91f4bb8674cc2c404653cc1c06d930d1eaa42827834e523f29a7c37b875648"
+  },
+  "req-003": {
+    "texts": [
+      "agent-0",
+      "router · structural",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 530ms"
+    ],
+    "sha256": "2c5e029de7ed85373ee340e9a621a1d18fd4d3f63b200cde7860ceedce04b5e0"
+  },
+  "req-004": {
+    "texts": [
+      "agent-1",
+      "router · cascade",
+      "cheap leg",
+      "cheap attempt superseded · q=0.70",
+      "escalation · quality gate",
+      "Provider 0 · Model 0 · served · 540ms"
+    ],
+    "sha256": "885eca33a1fabcfe02724acc18fbeb1981f913f5966dd5ff05d53892b588055e"
+  },
+  "req-005": {
+    "texts": ["agent-2", "router · explicit", "Provider 1 · Model 1 · served · 550ms"],
+    "sha256": "5fbe3568f08400d7524fbdbab1809f4b22f39afa265e6140b2fce31a9a4fd995"
+  },
+  "req-006": {
+    "texts": ["agent-0", "router · header", "Provider 0 · Model 2 · served · 560ms"],
+    "sha256": "87bd87e09099c71568b74c67dd0e3cefc8c13856c61bd8393904e64414c28e15"
+  },
+  "req-007": {
+    "texts": [
+      "agent-1",
+      "router · default",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 570ms"
+    ],
+    "sha256": "2bf362f1c17a2ffa80a1b8c2ce5d83fcdcf76ed564861c3663ac2952b977998a"
+  },
+  "req-008": {
+    "texts": ["agent-2", "router · structural", "Provider 0 · Model 0 · served · 580ms"],
+    "sha256": "fe69b72875ae785d76c269184b3ffc2ad62072e319146e19bdc864a5ad534e52"
+  },
+  "req-009": {
+    "texts": [
+      "agent-0",
+      "router · cascade",
+      "cheap leg · attempts not recorded",
+      "escalation · cheap leg did not serve",
+      "Provider 1 · Model 1 · served · 590ms"
+    ],
+    "sha256": "af797b27abd11928e7bf9f75861cedc79177d9e9ecfa8b509af38a0266c07f6a"
+  },
+  "req-010": {
+    "texts": ["agent-1", "router · explicit", "Provider 0 · Model 2 · served · 600ms"],
+    "sha256": "9c8a79ce8453dc90cd0d23d7a40fbf7a4afb2067efa6d743c54da41bd5badef2"
+  },
+  "req-011": {
+    "texts": [
+      "agent-2",
+      "router · header",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 610ms"
+    ],
+    "sha256": "e91c97c59621db569a69ccc9155fc30a1cbcd3662e61edff75b4bc7b9564e96b"
+  },
+  "req-012": {
+    "texts": ["agent-0", "router · default", "Provider 0 · Model 0 · served · 620ms"],
+    "sha256": "d1f5537e2e0cb693237b937329d308740d15dad552955771bda11b37bc2c7438"
+  },
+  "req-013": {
+    "texts": ["agent-1", "router · structural", "Provider 1 · Model 1 · served · 630ms"],
+    "sha256": "97aa60d413d9f1fb24357feb62c3acc4d07acca71b227c429f3e1fcd9c50ed5e"
+  },
+  "req-014": {
+    "texts": [
+      "agent-2",
+      "router · cascade",
+      "cheap leg",
+      "cheap attempt superseded · q=0.70 · $0.0003",
+      "escalation · quality gate",
+      "Provider 0 · Model 2 · served · 640ms"
+    ],
+    "sha256": "a5a97a0d83986120c063f5e120b7b7fa96f1fa8aea5415a5e5301e9fc027e544"
+  },
+  "req-015": {
+    "texts": [
+      "agent-0",
+      "router · explicit",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 650ms"
+    ],
+    "sha256": "71d06dae70d33cfb66083fcc3e2b1cdb0bdf3ca03be9b08be73823231f3a2b41"
+  },
+  "req-016": {
+    "texts": ["agent-1", "router · header", "Provider 0 · Model 0 · served · 660ms"],
+    "sha256": "fbd4849539fdf694c79cf916e4890999b51e646a6aefee8dbc4c98ca52117938"
+  },
+  "req-017": {
+    "texts": ["agent-2", "router · default", "Provider 1 · Model 1 · served · 670ms"],
+    "sha256": "38e7796d923409adfb2f77265c85878486a88104ecc2b73e668244c40117d8c6"
+  },
+  "req-018": {
+    "texts": ["agent-0", "router · structural", "Provider 0 · Model 2 · served · 680ms"],
+    "sha256": "3207bec5404f1df3ab4f28407b6ba8f9fe5397a93dd2033311f85cf754b0f624"
+  },
+  "req-019": {
+    "texts": [
+      "agent-1",
+      "router · cascade",
+      "cheap leg · attempts not recorded",
+      "escalation · cheap leg did not serve",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 690ms"
+    ],
+    "sha256": "9649fcaa8f035737b9a0bb0c21f3c5d782281e0e3917b853ba578e6bd1116fb0"
+  },
+  "req-020": {
+    "texts": ["agent-2", "router · explicit", "Provider 0 · Model 0 · served · 700ms"],
+    "sha256": "0fc815e6e5bce3d5ee86b6df4b180d2d835e1439b05507c46645b6129e2d8ea9"
+  },
+  "req-021": {
+    "texts": ["agent-0", "router · header", "Provider 1 · Model 1 · served · 710ms"],
+    "sha256": "8e971138c7185cb1954a7b77812919fea0a7a114c5d92e06c19343de2aebba54"
+  },
+  "req-022": {
+    "texts": ["agent-1", "router · default", "Provider 0 · Model 2 · served · 720ms"],
+    "sha256": "afdeb762a1b9172252abdcac5489c0ec1fad25b0bc54ccc66d7e1e5835741c69"
+  },
+  "req-023": {
+    "texts": [
+      "agent-2",
+      "router · structural",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 730ms"
+    ],
+    "sha256": "3eebf9a20dcea963d35a57dce504233dbc1cf1721ec6f290518a0116a9025769"
+  },
+  "req-024": {
+    "texts": [
+      "agent-0",
+      "router · cascade",
+      "cheap leg",
+      "cheap attempt superseded",
+      "escalation · quality gate",
+      "Provider 0 · Model 0 · served · 740ms"
+    ],
+    "sha256": "a2e4caac7ca43cf23f33faf9e3b8bd6fd5744b8eb3b5185554fbb217aee4f4e7"
+  },
+  "req-025": {
+    "texts": ["agent-1", "router · explicit", "Provider 1 · Model 1 · served · 750ms"],
+    "sha256": "dddf4379fadeda8e281bcb07fee6550c3fd39a472dbfb6e148d8166130ae07d5"
+  },
+  "req-026": {
+    "texts": ["agent-2", "router · header", "Provider 0 · Model 2 · served · 760ms"],
+    "sha256": "a46f6234219eb7b20c015221beeb5fd31dcbab1b61b0055242c8559929009d5c"
+  },
+  "req-027": {
+    "texts": [
+      "agent-0",
+      "router · default",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 770ms"
+    ],
+    "sha256": "7cbfb34e0d4099c0ddfd6789becc87692db2ff5944870fbb28bf792097bd5e61"
+  },
+  "req-028": {
+    "texts": ["agent-1", "router · structural", "Provider 0 · Model 0 · served · 780ms"],
+    "sha256": "4f7ecf672b14371fd93796027962a6105946ef9d8e97a454f8435ee886ff3d4a"
+  },
+  "req-029": {
+    "texts": [
+      "agent-2",
+      "router · cascade",
+      "cheap leg · attempts not recorded",
+      "escalation · cheap leg did not serve",
+      "Provider 1 · Model 1 · served · 790ms"
+    ],
+    "sha256": "57ddf1cdb0a19616a8ad5fb4eb9dae6fb982d50062aff9588b290dad7ca80ca9"
+  },
+  "rt-error-empty": {
+    "texts": [
+      "billing-bot",
+      "router · explicit",
+      "gpt-a · rate_limit · HTTP 429",
+      "Provider A · failed · 2.10s"
+    ],
+    "sha256": "5987094afb17e3dbfefc5d13cb2c4d2cf4c2b2e7e481a1c850a49dc6fb2916d9"
+  },
+  "rt-fallback-empty": {
+    "texts": [
+      "billing-bot",
+      "router · header",
+      "gpt-a · rate_limit · HTTP 429 · rate_limit_exceeded",
+      "gpt-b · skipped — circuit open (provider not contacted)",
+      "Provider C · model-c · served · 1.24s"
+    ],
+    "sha256": "99a83fa2222a0f1023904d4afdf328ba374404375d893c84d542fe498da92802"
+  },
+  "rt-success-empty": {
+    "texts": ["(no agent)", "router · explicit", "Provider C · model-c · served · 412ms"],
+    "sha256": "5bde10effe76ad57c25c5d97fc43d0758282226db64565ef55cf61dbed46e251"
+  },
+  "rt-cascade-empty": {
+    "texts": [
+      "billing-bot",
+      "router · cascade",
+      "cheap leg",
+      "cheap-a · timeout",
+      "cheap attempt superseded · q=0.42 · $0.0031",
+      "escalation · quality gate",
+      "strong-a · server_error · HTTP 503",
+      "Provider S · model-strong · served · 1.24s"
+    ],
+    "sha256": "4c99ac31c0a2eb4a40febc0ea347f80cb4c6e259569a52cac01703ee0edb56d4"
+  },
+  "rt-batch-empty": {
+    "texts": ["billing-bot", "router · explicit", "Provider C · model-c · served · 2h 3m"],
+    "sha256": "52a78e2ff13b52785f8ee065eceb2c7017f3d0e3347a9a4e7542cbf01f5fc2c4"
+  },
+  "rt-unrecorded-empty": {
+    "texts": [
+      "Lobechat",
+      "router · cascade",
+      "cheap leg · attempts not recorded",
+      "escalation · cheap leg did not serve",
+      "XiaomiMiMo · mimo-v2.6-pro · served · 38.89s"
+    ],
+    "sha256": "55c33ef8b97ae6eb88ada2db397dbcc6b83762b5bd98b2092bcf1adc90216fd1"
+  },
+  "rt-kept-empty": {
+    "texts": [
+      "billing-bot",
+      "router · cascade",
+      "cheap leg",
+      "Groq · llama-cheap · served · 1.24s · quality gate passed · q=0.87"
+    ],
+    "sha256": "9a6299861d8268fde40340e7bb86f4af8aff49ff1124e57447dd5987ef625ec0"
+  },
+  "rt-deadline-empty": {
+    "texts": [
+      "Lobechat",
+      "router · cascade",
+      "cheap leg",
+      "cheap-1 · no reply by the cheap deadline",
+      "escalation · cheap leg did not serve",
+      "XiaomiMiMo · mimo-v2.6-pro · served · 38.89s"
+    ],
+    "sha256": "4d582bf5e4ab40986caba5298dc17a83e79ad5edbed4e95b6cbae27ee2766d89"
+  },
+  "lg-cancelled-empty": {
+    "texts": [
+      "(no agent)",
+      "router · explicit",
+      "Provider C · model-c · cancelled by client · 412ms"
+    ],
+    "sha256": "bb0795a435c70d16d214e425888796c4e23b6ab95a1ac5be28f6580c824a1c99"
+  },
+  "lg-throttled-empty": {
+    "texts": ["(no agent)", "router · explicit", "Provider C · throttled · 412ms"],
+    "sha256": "f87fc39d8b8158a1921362ede701dd5275e8b238fbe368bca074e6c78761ad76"
+  },
+  "lg-cascade-cancelled-empty": {
+    "texts": [
+      "billing-bot",
+      "router · cascade",
+      "cheap leg",
+      "cheap-a · timeout",
+      "cheap attempt superseded · q=0.42 · $0.0031",
+      "escalation · quality gate",
+      "strong-a · server_error · HTTP 503",
+      "Provider S · model-strong · cancelled by client · 1.24s"
+    ],
+    "sha256": "00dfcbce5837400c92b11930cc1b21a62c51b9158e1670f8d020b2be5a6e825f"
+  },
+  "lg-cascade-error-empty": {
+    "texts": [
+      "billing-bot",
+      "router · cascade",
+      "cheap leg",
+      "cheap-a · timeout",
+      "cheap attempt superseded · q=0.42 · $0.0031",
+      "escalation · quality gate",
+      "strong-a · server_error · HTTP 503",
+      "Provider S · model-strong · failed · 1.24s"
+    ],
+    "sha256": "09ee586f33fd62f58257a43bf452fcf278b21c2ee72d6bd11c5847569ce3b2dd"
+  },
+  "lg-unrecorded-error-empty": {
+    "texts": [
+      "Lobechat",
+      "router · cascade",
+      "cheap leg · attempts not recorded",
+      "escalation · cheap leg did not serve",
+      "XiaomiMiMo · mimo-v2.6-pro · failed · 38.89s"
+    ],
+    "sha256": "53b2ca7acced288d44d832df99f47994fcdc58f750d4541884b15e84aaa75bf2"
+  },
+  "lg-unrecorded-replayed-empty": {
+    "texts": [
+      "Lobechat",
+      "router · cascade",
+      "cheap leg",
+      "cheap attempt superseded · $0.0031",
+      "escalation · cheap leg did not serve",
+      "XiaomiMiMo · mimo-v2.6-pro · served · 38.89s"
+    ],
+    "sha256": "b5ecd95e56c27a60a38e328594f4034e6d923ebce635f9d683519f28d85221c4"
+  },
+  "lg-kept-cancelled-empty": {
+    "texts": [
+      "billing-bot",
+      "router · cascade",
+      "cheap leg",
+      "Groq · llama-cheap · cancelled by client · 1.24s"
+    ],
+    "sha256": "ab490e605c186aa4b202cf412c165ccd4162c5f8804de231749aeaff8308aea4"
+  },
+  "lg-error-stop-empty": {
+    "texts": [
+      "billing-bot",
+      "router · explicit",
+      "gpt-a · rate_limit · HTTP 429",
+      "model-c · failed · 2.10s"
+    ],
+    "sha256": "96e488526ee772a90e38c85e98d6cf11379a24479ebcf7e5c3dac2ba4179cde4"
+  },
+  "req-000-empty": {
+    "texts": ["agent-0", "router · explicit", "Provider 0 · Model 0 · served · 500ms"],
+    "sha256": "d698c2659ac0af042a4434a3a259055be64935b25894024547187ccfe1d64a16"
+  },
+  "req-001-empty": {
+    "texts": ["agent-1", "router · header", "Provider 1 · Model 1 · served · 510ms"],
+    "sha256": "f44d954a02cb112d24d25f9ff6d34c48bcd8fa4b1747bbe7030c2f5155a48b69"
+  },
+  "req-002-empty": {
+    "texts": ["agent-2", "router · default", "Provider 0 · Model 2 · served · 520ms"],
+    "sha256": "6b91f4bb8674cc2c404653cc1c06d930d1eaa42827834e523f29a7c37b875648"
+  },
+  "req-003-empty": {
+    "texts": [
+      "agent-0",
+      "router · structural",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 530ms"
+    ],
+    "sha256": "2c5e029de7ed85373ee340e9a621a1d18fd4d3f63b200cde7860ceedce04b5e0"
+  },
+  "req-004-empty": {
+    "texts": [
+      "agent-1",
+      "router · cascade",
+      "cheap leg",
+      "cheap attempt superseded · q=0.70",
+      "escalation · quality gate",
+      "Provider 0 · Model 0 · served · 540ms"
+    ],
+    "sha256": "885eca33a1fabcfe02724acc18fbeb1981f913f5966dd5ff05d53892b588055e"
+  },
+  "req-005-empty": {
+    "texts": ["agent-2", "router · explicit", "Provider 1 · Model 1 · served · 550ms"],
+    "sha256": "5fbe3568f08400d7524fbdbab1809f4b22f39afa265e6140b2fce31a9a4fd995"
+  },
+  "req-006-empty": {
+    "texts": ["agent-0", "router · header", "Provider 0 · Model 2 · served · 560ms"],
+    "sha256": "87bd87e09099c71568b74c67dd0e3cefc8c13856c61bd8393904e64414c28e15"
+  },
+  "req-007-empty": {
+    "texts": [
+      "agent-1",
+      "router · default",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 570ms"
+    ],
+    "sha256": "2bf362f1c17a2ffa80a1b8c2ce5d83fcdcf76ed564861c3663ac2952b977998a"
+  },
+  "req-008-empty": {
+    "texts": ["agent-2", "router · structural", "Provider 0 · Model 0 · served · 580ms"],
+    "sha256": "fe69b72875ae785d76c269184b3ffc2ad62072e319146e19bdc864a5ad534e52"
+  },
+  "req-009-empty": {
+    "texts": [
+      "agent-0",
+      "router · cascade",
+      "cheap leg · attempts not recorded",
+      "escalation · cheap leg did not serve",
+      "Provider 1 · Model 1 · served · 590ms"
+    ],
+    "sha256": "af797b27abd11928e7bf9f75861cedc79177d9e9ecfa8b509af38a0266c07f6a"
+  },
+  "req-010-empty": {
+    "texts": ["agent-1", "router · explicit", "Provider 0 · Model 2 · served · 600ms"],
+    "sha256": "9c8a79ce8453dc90cd0d23d7a40fbf7a4afb2067efa6d743c54da41bd5badef2"
+  },
+  "req-011-empty": {
+    "texts": [
+      "agent-2",
+      "router · header",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 610ms"
+    ],
+    "sha256": "e91c97c59621db569a69ccc9155fc30a1cbcd3662e61edff75b4bc7b9564e96b"
+  },
+  "req-012-empty": {
+    "texts": ["agent-0", "router · default", "Provider 0 · Model 0 · served · 620ms"],
+    "sha256": "d1f5537e2e0cb693237b937329d308740d15dad552955771bda11b37bc2c7438"
+  },
+  "req-013-empty": {
+    "texts": ["agent-1", "router · structural", "Provider 1 · Model 1 · served · 630ms"],
+    "sha256": "97aa60d413d9f1fb24357feb62c3acc4d07acca71b227c429f3e1fcd9c50ed5e"
+  },
+  "req-014-empty": {
+    "texts": [
+      "agent-2",
+      "router · cascade",
+      "cheap leg",
+      "cheap attempt superseded · q=0.70 · $0.0003",
+      "escalation · quality gate",
+      "Provider 0 · Model 2 · served · 640ms"
+    ],
+    "sha256": "a5a97a0d83986120c063f5e120b7b7fa96f1fa8aea5415a5e5301e9fc027e544"
+  },
+  "req-015-empty": {
+    "texts": [
+      "agent-0",
+      "router · explicit",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 650ms"
+    ],
+    "sha256": "71d06dae70d33cfb66083fcc3e2b1cdb0bdf3ca03be9b08be73823231f3a2b41"
+  },
+  "req-016-empty": {
+    "texts": ["agent-1", "router · header", "Provider 0 · Model 0 · served · 660ms"],
+    "sha256": "fbd4849539fdf694c79cf916e4890999b51e646a6aefee8dbc4c98ca52117938"
+  },
+  "req-017-empty": {
+    "texts": ["agent-2", "router · default", "Provider 1 · Model 1 · served · 670ms"],
+    "sha256": "38e7796d923409adfb2f77265c85878486a88104ecc2b73e668244c40117d8c6"
+  },
+  "req-018-empty": {
+    "texts": ["agent-0", "router · structural", "Provider 0 · Model 2 · served · 680ms"],
+    "sha256": "3207bec5404f1df3ab4f28407b6ba8f9fe5397a93dd2033311f85cf754b0f624"
+  },
+  "req-019-empty": {
+    "texts": [
+      "agent-1",
+      "router · cascade",
+      "cheap leg · attempts not recorded",
+      "escalation · cheap leg did not serve",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 690ms"
+    ],
+    "sha256": "9649fcaa8f035737b9a0bb0c21f3c5d782281e0e3917b853ba578e6bd1116fb0"
+  },
+  "req-020-empty": {
+    "texts": ["agent-2", "router · explicit", "Provider 0 · Model 0 · served · 700ms"],
+    "sha256": "0fc815e6e5bce3d5ee86b6df4b180d2d835e1439b05507c46645b6129e2d8ea9"
+  },
+  "req-021-empty": {
+    "texts": ["agent-0", "router · header", "Provider 1 · Model 1 · served · 710ms"],
+    "sha256": "8e971138c7185cb1954a7b77812919fea0a7a114c5d92e06c19343de2aebba54"
+  },
+  "req-022-empty": {
+    "texts": ["agent-1", "router · default", "Provider 0 · Model 2 · served · 720ms"],
+    "sha256": "afdeb762a1b9172252abdcac5489c0ec1fad25b0bc54ccc66d7e1e5835741c69"
+  },
+  "req-023-empty": {
+    "texts": [
+      "agent-2",
+      "router · structural",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 730ms"
+    ],
+    "sha256": "3eebf9a20dcea963d35a57dce504233dbc1cf1721ec6f290518a0116a9025769"
+  },
+  "req-024-empty": {
+    "texts": [
+      "agent-0",
+      "router · cascade",
+      "cheap leg",
+      "cheap attempt superseded",
+      "escalation · quality gate",
+      "Provider 0 · Model 0 · served · 740ms"
+    ],
+    "sha256": "a2e4caac7ca43cf23f33faf9e3b8bd6fd5744b8eb3b5185554fbb217aee4f4e7"
+  },
+  "req-025-empty": {
+    "texts": ["agent-1", "router · explicit", "Provider 1 · Model 1 · served · 750ms"],
+    "sha256": "dddf4379fadeda8e281bcb07fee6550c3fd39a472dbfb6e148d8166130ae07d5"
+  },
+  "req-026-empty": {
+    "texts": ["agent-2", "router · header", "Provider 0 · Model 2 · served · 760ms"],
+    "sha256": "a46f6234219eb7b20c015221beeb5fd31dcbab1b61b0055242c8559929009d5c"
+  },
+  "req-027-empty": {
+    "texts": [
+      "agent-0",
+      "router · default",
+      "gpt-x · unavailable · HTTP 529",
+      "fallback-y · skipped — circuit open (provider not contacted)",
+      "failed · 770ms"
+    ],
+    "sha256": "7cbfb34e0d4099c0ddfd6789becc87692db2ff5944870fbb28bf792097bd5e61"
+  },
+  "req-028-empty": {
+    "texts": ["agent-1", "router · structural", "Provider 0 · Model 0 · served · 780ms"],
+    "sha256": "4f7ecf672b14371fd93796027962a6105946ef9d8e97a454f8435ee886ff3d4a"
+  },
+  "req-029-empty": {
+    "texts": [
+      "agent-2",
+      "router · cascade",
+      "cheap leg · attempts not recorded",
+      "escalation · cheap leg did not serve",
+      "Provider 1 · Model 1 · served · 790ms"
+    ],
+    "sha256": "57ddf1cdb0a19616a8ad5fb4eb9dae6fb982d50062aff9588b290dad7ca80ca9"
+  }
+}
